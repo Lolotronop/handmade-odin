@@ -62,7 +62,9 @@ main :: proc() {
 	msg: win.MSG
 
 
-	for win.GetMessageW(&msg, nil, 0, 0) > 0 && running {
+	res: win.LRESULT = 1
+	for res > 0 && running {
+		win.GetMessageW(&msg, nil, 0, 0)
 		win.TranslateMessage(&msg)
 		win.DispatchMessageW(&msg)
 	}

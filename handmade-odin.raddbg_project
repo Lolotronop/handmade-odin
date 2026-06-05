@@ -1,0 +1,8 @@
+// raddbg 0.9.26 project file
+
+target:
+{
+  executable: "handmade-odin.exe"
+  working_directory: ""
+  enabled: 1
+}

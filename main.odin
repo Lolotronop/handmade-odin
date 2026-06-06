@@ -128,22 +128,14 @@ render_gradient :: proc(width, height, offset_x, offset_y: i32) {
 	row := bitmap_memory
 
 	for y in 0 ..< height {
-		pixel := row
+		pixel := cast([^]u32)row
 		for x in 0 ..< width {
-			// B
-			pixel[0] = 0
-			pixel = mem.ptr_offset(pixel, 1)
+			r := u8(x + offset_x)
+			g := u8(y + offset_y)
+			b := u8(0)
 
-			// G
-			pixel[0] = u8(x + offset_x)
-			pixel = mem.ptr_offset(pixel, 1)
+			pixel[0] = u32(r) << 8 | u32(g) << 16 | u32(b) << 24
 
-			// R
-			pixel[0] = u8(y + offset_y)
-			pixel = mem.ptr_offset(pixel, 1)
-
-			// A?
-			pixel[0] = 0
 			pixel = mem.ptr_offset(pixel, 1)
 		}
 		row = mem.ptr_offset(row, pitch)

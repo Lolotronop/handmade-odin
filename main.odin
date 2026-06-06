@@ -2,6 +2,7 @@ package handmade_odin
 
 import "base:runtime"
 import fmt "core:fmt"
+import "core:mem"
 import os "core:os"
 import win "core:sys/windows"
 
@@ -9,10 +10,7 @@ running := false
 
 
 bitmap_info: win.BITMAPINFO = {}
-bitmap_memory: rawptr = nil
-bitmap_hanle: win.HBITMAP = nil
-
-bitmap_device_context: win.HDC
+bitmap_memory: [^]u8 = nil
 
 main :: proc() {
 	instance := win.HINSTANCE(win.GetModuleHandleW(nil))
@@ -73,45 +71,70 @@ main :: proc() {
 }
 
 resize_dib_section :: proc(width, height: i32) {
-	if (bitmap_hanle != nil) {
-		win.DeleteObject(cast(win.HGDIOBJ)bitmap_hanle)
-		bitmap_hanle = nil
-	}
-
-	if (bitmap_device_context == nil) {
-		bitmap_device_context = win.CreateCompatibleDC(nil)
+	if (bitmap_memory != nil) {
+		win.VirtualFree(bitmap_memory, 0, win.MEM_RELEASE)
 	}
 
 	bitmap_info.bmiHeader.biSize = size_of(win.BITMAPINFO)
 	bitmap_info.bmiHeader.biWidth = width
-	bitmap_info.bmiHeader.biHeight = height
+	bitmap_info.bmiHeader.biHeight = -height
 	bitmap_info.bmiHeader.biPlanes = 1
 	bitmap_info.bmiHeader.biBitCount = 32
 	bitmap_info.bmiHeader.biCompression = win.BI_RGB
 
-	bitmap_hanle = win.CreateDIBSection(
-		bitmap_device_context,
-		&bitmap_info,
-		win.DIB_RGB_COLORS,
-		&bitmap_memory,
-		nil,
-		0,
-	)
+	err: mem.Allocator_Error
+	bitmap_size: uint = uint(width) * uint(height) * 4
+	bitmap_memory = cast([^]u8)(win.VirtualAlloc(
+			nil,
+			bitmap_size,
+			win.MEM_COMMIT,
+			win.PAGE_READWRITE,
+		))
+
+	pitch := width * 4
+	row := bitmap_memory
+
+	for y in 0 ..< height {
+		pixel := row
+		for x in 0 ..< width {
+			// B
+			pixel[0] = 0
+			pixel = mem.ptr_offset(pixel, 1)
+
+			// G
+			pixel[0] = u8(x)
+			pixel = mem.ptr_offset(pixel, 1)
+
+			// R
+			pixel[0] = u8(y)
+			pixel = mem.ptr_offset(pixel, 1)
+
+			// A?
+			pixel[0] = 0
+			pixel = mem.ptr_offset(pixel, 1)
+		}
+		row = mem.ptr_offset(row, pitch)
+	}
 }
 
-update_window :: proc(device_context: win.HDC, x, y, width, height: i32) {
+update_window :: proc(device_context: win.HDC, window_rect: win.RECT, x, y, width, height: i32) {
+	bitmap_width := bitmap_info.bmiHeader.biWidth
+	bitmap_height := -bitmap_info.bmiHeader.biHeight
+	window_width := window_rect.right - window_rect.left
+	window_height := window_rect.bottom - window_rect.top
+
 	win.StretchDIBits(
 		device_context,
-		x,
-		y,
-		width,
-		height,
-		x,
-		y,
-		width,
-		height,
-		nil,
-		nil,
+		0,
+		0,
+		window_width,
+		window_height,
+		0,
+		0,
+		bitmap_width,
+		bitmap_height,
+		bitmap_memory,
+		&bitmap_info,
 		win.DIB_RGB_COLORS,
 		win.SRCCOPY,
 	)
@@ -125,7 +148,7 @@ win_proc :: proc "stdcall" (
 ) -> win.LRESULT {
 	context = runtime.default_context()
 
-	fmt.printfln("Message: %v %v", message, wparam)
+	// fmt.printfln("Message: %v %v", message, wparam)
 
 	res: win.LRESULT
 
@@ -135,7 +158,9 @@ win_proc :: proc "stdcall" (
 		win.GetClientRect(window, &rect)
 		width := rect.right - rect.left
 		height := rect.bottom - rect.top
-		resize_dib_section(width, height)
+		if (bitmap_info.bmiHeader.biWidth != width || bitmap_info.bmiHeader.biHeight != height) {
+			resize_dib_section(width, height)
+		}
 	case win.WM_DESTROY:
 	case win.WM_CLOSE:
 		running = false
@@ -145,7 +170,8 @@ win_proc :: proc "stdcall" (
 		rect := paint.rcPaint
 		width := rect.right - rect.left
 		height := rect.bottom - rect.top
-		win.PatBlt(ctx, rect.left, rect.top, width, height, win.WHITENESS)
+		// win.PatBlt(ctx, rect.left, rect.top, width, height, win.BLACKNESS)
+		update_window(ctx, rect, 0, 0, width, height)
 		win.EndPaint(window, &paint)
 	}
 

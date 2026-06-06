@@ -61,14 +61,43 @@ main :: proc() {
 
 
 	res: win.LRESULT = 1
+
+	offset_x: i32 = 0
+	offset_y: i32 = 0
 	for res > 0 && running {
-		win.GetMessageW(&msg, nil, 0, 0)
-		win.TranslateMessage(&msg)
-		win.DispatchMessageW(&msg)
+		for win.PeekMessageA(&msg, nil, 0, 0, win.PM_REMOVE) {
+			if msg.message == win.WM_QUIT {
+				running = false
+			}
+
+			win.TranslateMessage(&msg)
+			win.DispatchMessageW(&msg)
+		}
+
+		offset_x += 1
+		offset_y += 1
+
+		if offset_x >= 256 {
+			offset_x = 0
+		}
+		if offset_y >= 256 {
+			offset_y = 0
+		}
+
+		width := cast(i32)bitmap_info.bmiHeader.biWidth
+		height := -cast(i32)bitmap_info.bmiHeader.biHeight
+
+		render_gradient(width, height, offset_x, offset_y)
+		rect: win.RECT
+		win.GetClientRect(hwnd, &rect)
+		dc := win.GetDC(hwnd)
+		update_window(dc, rect, 0, 0, width, height)
+		win.ReleaseDC(hwnd, dc)
 	}
 
 	os.exit(cast(int)msg.wParam)
 }
+
 
 resize_dib_section :: proc(width, height: i32) {
 	if (bitmap_memory != nil) {
@@ -91,6 +120,10 @@ resize_dib_section :: proc(width, height: i32) {
 			win.PAGE_READWRITE,
 		))
 
+	// render_gradient(width, height, 128, 0)
+}
+
+render_gradient :: proc(width, height, offset_x, offset_y: i32) {
 	pitch := width * 4
 	row := bitmap_memory
 
@@ -102,11 +135,11 @@ resize_dib_section :: proc(width, height: i32) {
 			pixel = mem.ptr_offset(pixel, 1)
 
 			// G
-			pixel[0] = u8(x)
+			pixel[0] = u8(x + offset_x)
 			pixel = mem.ptr_offset(pixel, 1)
 
 			// R
-			pixel[0] = u8(y)
+			pixel[0] = u8(y + offset_y)
 			pixel = mem.ptr_offset(pixel, 1)
 
 			// A?

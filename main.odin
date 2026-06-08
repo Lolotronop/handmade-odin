@@ -9,8 +9,19 @@ import win "core:sys/windows"
 running := false
 
 
-bitmap_info: win.BITMAPINFO = {}
-bitmap_memory: [^]u8 = nil
+Offscreen_Buffer :: struct {
+	info:            win.BITMAPINFO,
+	memory:          [^]u8,
+	width:           i32,
+	height:          i32,
+	pitch:           i32,
+	bytes_per_pixel: i32,
+}
+
+back_buffer: Offscreen_Buffer = {
+	bytes_per_pixel = 4,
+}
+
 
 main :: proc() {
 	instance := win.HINSTANCE(win.GetModuleHandleW(nil))
@@ -62,8 +73,8 @@ main :: proc() {
 
 	res: win.LRESULT = 1
 
-	offset_x: i32 = 0
-	offset_y: i32 = 0
+
+	offset: [2]i32 = {0, 0}
 	for res > 0 && running {
 		for win.PeekMessageA(&msg, nil, 0, 0, win.PM_REMOVE) {
 			if msg.message == win.WM_QUIT {
@@ -74,24 +85,21 @@ main :: proc() {
 			win.DispatchMessageW(&msg)
 		}
 
-		offset_x += 1
-		offset_y += 1
+		offset.xy += 1
 
-		if offset_x >= 256 {
-			offset_x = 0
-		}
-		if offset_y >= 256 {
-			offset_y = 0
-		}
+		// if offset.x >= 256 {
+		// 	offset.x = 0
+		// }
+		// if offset.y >= 256 {
+		// 	offset.y = 0
+		// }
 
-		width := cast(i32)bitmap_info.bmiHeader.biWidth
-		height := -cast(i32)bitmap_info.bmiHeader.biHeight
 
-		render_gradient(width, height, offset_x, offset_y)
+		render_gradient(&back_buffer, offset)
 		rect: win.RECT
 		win.GetClientRect(hwnd, &rect)
 		dc := win.GetDC(hwnd)
-		update_window(dc, rect, 0, 0, width, height)
+		display_buffer(dc, rect, &back_buffer, 0, 0, back_buffer.width, back_buffer.height)
 		win.ReleaseDC(hwnd, dc)
 	}
 
@@ -99,21 +107,25 @@ main :: proc() {
 }
 
 
-resize_dib_section :: proc(width, height: i32) {
-	if (bitmap_memory != nil) {
-		win.VirtualFree(bitmap_memory, 0, win.MEM_RELEASE)
+resize_dib_section :: proc(buf: ^Offscreen_Buffer, width, height: i32) {
+	if (buf.memory != nil) {
+		win.VirtualFree(buf.memory, 0, win.MEM_RELEASE)
 	}
 
-	bitmap_info.bmiHeader.biSize = size_of(win.BITMAPINFO)
-	bitmap_info.bmiHeader.biWidth = width
-	bitmap_info.bmiHeader.biHeight = -height
-	bitmap_info.bmiHeader.biPlanes = 1
-	bitmap_info.bmiHeader.biBitCount = 32
-	bitmap_info.bmiHeader.biCompression = win.BI_RGB
+	buf.width = width
+	buf.height = height
+	buf.pitch = width * buf.bytes_per_pixel
+
+	buf.info.bmiHeader.biSize = size_of(win.BITMAPINFO)
+	buf.info.bmiHeader.biWidth = width
+	buf.info.bmiHeader.biHeight = -height
+	buf.info.bmiHeader.biPlanes = 1
+	buf.info.bmiHeader.biBitCount = 32
+	buf.info.bmiHeader.biCompression = win.BI_RGB
 
 	err: mem.Allocator_Error
 	bitmap_size: uint = uint(width) * uint(height) * 4
-	bitmap_memory = cast([^]u8)(win.VirtualAlloc(
+	buf.memory = cast([^]u8)(win.VirtualAlloc(
 			nil,
 			bitmap_size,
 			win.MEM_COMMIT,
@@ -121,30 +133,34 @@ resize_dib_section :: proc(width, height: i32) {
 		))
 
 	// render_gradient(width, height, 128, 0)
+
+	pitch := buf.width * buf.bytes_per_pixel
 }
 
-render_gradient :: proc(width, height, offset_x, offset_y: i32) {
-	pitch := width * 4
-	row := bitmap_memory
+render_gradient :: proc(buf: ^Offscreen_Buffer, offset: [2]i32) {
+	row := buf.memory
 
-	for y in 0 ..< height {
+	for y in 0 ..< buf.height {
 		pixel := cast([^]u32)row
-		for x in 0 ..< width {
-			r := u8(x + offset_x)
-			g := u8(y + offset_y)
+		for x in 0 ..< buf.width {
+			r := u8(x + offset.x)
+			g := u8(y + offset.y)
 			b := u8(0)
 
 			pixel[0] = u32(r) << 8 | u32(g) << 16 | u32(b) << 24
 
 			pixel = mem.ptr_offset(pixel, 1)
 		}
-		row = mem.ptr_offset(row, pitch)
+		row = mem.ptr_offset(row, buf.pitch)
 	}
 }
 
-update_window :: proc(device_context: win.HDC, window_rect: win.RECT, x, y, width, height: i32) {
-	bitmap_width := bitmap_info.bmiHeader.biWidth
-	bitmap_height := -bitmap_info.bmiHeader.biHeight
+display_buffer :: proc(
+	device_context: win.HDC,
+	window_rect: win.RECT,
+	buf: ^Offscreen_Buffer,
+	x, y, width, height: i32,
+) {
 	window_width := window_rect.right - window_rect.left
 	window_height := window_rect.bottom - window_rect.top
 
@@ -156,10 +172,10 @@ update_window :: proc(device_context: win.HDC, window_rect: win.RECT, x, y, widt
 		window_height,
 		0,
 		0,
-		bitmap_width,
-		bitmap_height,
-		bitmap_memory,
-		&bitmap_info,
+		buf.width,
+		buf.height,
+		buf.memory,
+		&buf.info,
 		win.DIB_RGB_COLORS,
 		win.SRCCOPY,
 	)
@@ -183,8 +199,9 @@ win_proc :: proc "stdcall" (
 		win.GetClientRect(window, &rect)
 		width := rect.right - rect.left
 		height := rect.bottom - rect.top
-		if (bitmap_info.bmiHeader.biWidth != width || bitmap_info.bmiHeader.biHeight != height) {
-			resize_dib_section(width, height)
+		if (back_buffer.info.bmiHeader.biWidth != width ||
+			   back_buffer.info.bmiHeader.biHeight != height) {
+			resize_dib_section(&back_buffer, width, height)
 		}
 	case win.WM_DESTROY:
 	case win.WM_CLOSE:
@@ -196,7 +213,7 @@ win_proc :: proc "stdcall" (
 		width := rect.right - rect.left
 		height := rect.bottom - rect.top
 		// win.PatBlt(ctx, rect.left, rect.top, width, height, win.BLACKNESS)
-		update_window(ctx, rect, 0, 0, width, height)
+		display_buffer(ctx, rect, &back_buffer, 0, 0, width, height)
 		win.EndPaint(window, &paint)
 	}
 

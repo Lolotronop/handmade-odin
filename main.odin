@@ -183,9 +183,10 @@ win_proc :: proc "stdcall" (
 		dims := dimensions(window)
 		display_buffer(ctx, dims, &global_back_buffer)
 		win.EndPaint(window, &paint)
+	case:
+		res = win.DefWindowProcW(window, message, wparam, lparam)
 	}
 
-	res = win.DefWindowProcW(window, message, wparam, lparam)
 	return res
 }
 

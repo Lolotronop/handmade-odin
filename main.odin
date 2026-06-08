@@ -83,53 +83,6 @@ create_window :: proc(instance: win.HINSTANCE) -> win.HWND {
 	return hwnd
 }
 
-
-main :: proc() {
-	instance, lpCmdLine, startup_info := kinda_winmain()
-	window := create_window(instance)
-	// win.ShowWindow(hwnd, nCmdShow)
-	// win.UpdateWindow(hwnd)
-
-	buffer_resize(&back_buffer, {1280, 720})
-
-
-	running = true
-	msg: win.MSG
-	res: win.LRESULT = 1
-	offset: [2]i32 = {0, 0}
-
-	for res > 0 && running {
-		for win.PeekMessageA(&msg, nil, 0, 0, win.PM_REMOVE) {
-			if msg.message == win.WM_QUIT {
-				running = false
-			}
-
-			win.TranslateMessage(&msg)
-			win.DispatchMessageW(&msg)
-		}
-
-		offset.xy += 1
-
-		// if offset.x >= 256 {
-		// 	offset.x = 0
-		// }
-		// if offset.y >= 256 {
-		// 	offset.y = 0
-		// }
-
-
-		render_gradient(&back_buffer, offset)
-		dc := win.GetDC(window)
-
-		dims := dimensions(window)
-		display_buffer(dc, dims, &back_buffer)
-		win.ReleaseDC(window, dc)
-	}
-
-	os.exit(cast(int)msg.wParam)
-}
-
-
 buffer_resize :: proc(buf: ^Offscreen_Buffer, dims: [2]i32) {
 	if (buf.memory != nil) {
 		win.VirtualFree(buf.memory, 0, win.MEM_RELEASE)
@@ -234,4 +187,49 @@ win_proc :: proc "stdcall" (
 
 	res = win.DefWindowProcW(window, message, wparam, lparam)
 	return res
+}
+
+main :: proc() {
+	instance, lpCmdLine, startup_info := kinda_winmain()
+	window := create_window(instance)
+	// win.ShowWindow(hwnd, nCmdShow)
+	// win.UpdateWindow(hwnd)
+
+	buffer_resize(&back_buffer, {1280, 720})
+
+
+	running = true
+	msg: win.MSG
+	res: win.LRESULT = 1
+	offset: [2]i32 = {0, 0}
+
+	for res > 0 && running {
+		for win.PeekMessageA(&msg, nil, 0, 0, win.PM_REMOVE) {
+			if msg.message == win.WM_QUIT {
+				running = false
+			}
+
+			win.TranslateMessage(&msg)
+			win.DispatchMessageW(&msg)
+		}
+
+		offset.xy += 1
+
+		// if offset.x >= 256 {
+		// 	offset.x = 0
+		// }
+		// if offset.y >= 256 {
+		// 	offset.y = 0
+		// }
+
+
+		render_gradient(&back_buffer, offset)
+		dc := win.GetDC(window)
+
+		dims := dimensions(window)
+		display_buffer(dc, dims, &back_buffer)
+		win.ReleaseDC(window, dc)
+	}
+
+	os.exit(cast(int)msg.wParam)
 }

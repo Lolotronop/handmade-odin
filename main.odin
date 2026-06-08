@@ -1,10 +1,12 @@
 package handmade_odin
 
 import "base:runtime"
-import fmt "core:fmt"
 import "core:mem"
 import os "core:os"
 import win "core:sys/windows"
+
+// I use `dims` to mean the dimensions of a thing
+// so dims.x is with and dims.y is height
 
 running := false
 
@@ -36,19 +38,21 @@ back_buffer: Offscreen_Buffer = {
 	bytes_per_pixel = 4,
 }
 
-
-main :: proc() {
+kinda_winmain :: proc() -> (win.HINSTANCE, win.LPCWSTR, win.STARTUPINFOW) {
 	instance := win.HINSTANCE(win.GetModuleHandleW(nil))
 	assert(instance != nil, "Failed to fetch current instance")
 
 	lpCmdLine := win.GetCommandLineW()
-	fmt.printfln("Command line used to start this application was: %v", lpCmdLine)
 
 	startup_info: win.STARTUPINFOW
 	win.GetStartupInfoW(&startup_info)
 	nCmdShow :=
 		(startup_info.dwFlags & win.STARTF_USESHOWWINDOW) != 0 ? cast(win.c_int)startup_info.wShowWindow : win.SW_SHOWDEFAULT
 
+	return instance, lpCmdLine, startup_info
+}
+
+create_window :: proc(instance: win.HINSTANCE) -> win.HWND {
 	CLASS_NAME :: "Windows Window"
 
 	cls := win.WNDCLASSW {
@@ -74,24 +78,26 @@ main :: proc() {
 		instance,
 		nil,
 	)
+	assert(hwnd != nil, "Window creation failed")
 
-	assert(hwnd != nil, "Window creation Failed")
+	return hwnd
+}
 
-	running = true
 
+main :: proc() {
+	instance, lpCmdLine, startup_info := kinda_winmain()
+	window := create_window(instance)
 	// win.ShowWindow(hwnd, nCmdShow)
 	// win.UpdateWindow(hwnd)
 
+	buffer_resize(&back_buffer, {1280, 720})
+
+
+	running = true
 	msg: win.MSG
-
-
 	res: win.LRESULT = 1
-
-
-	resize_dib_section(&back_buffer, 1280, 720)
-
-
 	offset: [2]i32 = {0, 0}
+
 	for res > 0 && running {
 		for win.PeekMessageA(&msg, nil, 0, 0, win.PM_REMOVE) {
 			if msg.message == win.WM_QUIT {
@@ -113,35 +119,35 @@ main :: proc() {
 
 
 		render_gradient(&back_buffer, offset)
-		dc := win.GetDC(hwnd)
+		dc := win.GetDC(window)
 
-		dims := dimensions(hwnd)
+		dims := dimensions(window)
 		display_buffer(dc, dims, &back_buffer)
-		win.ReleaseDC(hwnd, dc)
+		win.ReleaseDC(window, dc)
 	}
 
 	os.exit(cast(int)msg.wParam)
 }
 
 
-resize_dib_section :: proc(buf: ^Offscreen_Buffer, width, height: i32) {
+buffer_resize :: proc(buf: ^Offscreen_Buffer, dims: [2]i32) {
 	if (buf.memory != nil) {
 		win.VirtualFree(buf.memory, 0, win.MEM_RELEASE)
 	}
 
-	buf.width = width
-	buf.height = height
-	buf.pitch = width * buf.bytes_per_pixel
+	buf.width = dims.x
+	buf.height = dims.y
+	buf.pitch = dims.x * buf.bytes_per_pixel
 
 	buf.info.bmiHeader.biSize = size_of(win.BITMAPINFO)
-	buf.info.bmiHeader.biWidth = width
-	buf.info.bmiHeader.biHeight = -height
+	buf.info.bmiHeader.biWidth = buf.width
+	buf.info.bmiHeader.biHeight = -buf.height
 	buf.info.bmiHeader.biPlanes = 1
 	buf.info.bmiHeader.biBitCount = 32
 	buf.info.bmiHeader.biCompression = win.BI_RGB
 
 	err: mem.Allocator_Error
-	bitmap_size: uint = uint(width * height * buf.bytes_per_pixel)
+	bitmap_size: uint = uint(buf.width * buf.height * buf.bytes_per_pixel)
 
 	buf.memory = cast([^]u8)(win.VirtualAlloc(
 			nil,

@@ -8,6 +8,20 @@ import win "core:sys/windows"
 
 running := false
 
+dimensions :: proc {
+	dimensions_rect,
+	dimensions_window,
+}
+
+dimensions_rect :: #force_inline proc(rect: win.RECT) -> [2]i32 {
+	return [2]i32{rect.right - rect.left, rect.bottom - rect.top}
+}
+
+dimensions_window :: proc(window: win.HWND) -> [2]i32 {
+	rect: win.RECT
+	win.GetClientRect(window, &rect)
+	return dimensions_rect(rect)
+}
 
 Offscreen_Buffer :: struct {
 	info:            win.BITMAPINFO,
@@ -74,6 +88,9 @@ main :: proc() {
 	res: win.LRESULT = 1
 
 
+	resize_dib_section(&back_buffer, 1280, 720)
+
+
 	offset: [2]i32 = {0, 0}
 	for res > 0 && running {
 		for win.PeekMessageA(&msg, nil, 0, 0, win.PM_REMOVE) {
@@ -96,10 +113,10 @@ main :: proc() {
 
 
 		render_gradient(&back_buffer, offset)
-		rect: win.RECT
-		win.GetClientRect(hwnd, &rect)
 		dc := win.GetDC(hwnd)
-		display_buffer(dc, rect, &back_buffer, 0, 0, back_buffer.width, back_buffer.height)
+
+		dims := dimensions(hwnd)
+		display_buffer(dc, dims, &back_buffer)
 		win.ReleaseDC(hwnd, dc)
 	}
 
@@ -124,7 +141,8 @@ resize_dib_section :: proc(buf: ^Offscreen_Buffer, width, height: i32) {
 	buf.info.bmiHeader.biCompression = win.BI_RGB
 
 	err: mem.Allocator_Error
-	bitmap_size: uint = uint(width) * uint(height) * 4
+	bitmap_size: uint = uint(width * height * buf.bytes_per_pixel)
+
 	buf.memory = cast([^]u8)(win.VirtualAlloc(
 			nil,
 			bitmap_size,
@@ -155,21 +173,13 @@ render_gradient :: proc(buf: ^Offscreen_Buffer, offset: [2]i32) {
 	}
 }
 
-display_buffer :: proc(
-	device_context: win.HDC,
-	window_rect: win.RECT,
-	buf: ^Offscreen_Buffer,
-	x, y, width, height: i32,
-) {
-	window_width := window_rect.right - window_rect.left
-	window_height := window_rect.bottom - window_rect.top
-
+display_buffer :: proc(device_context: win.HDC, window_dims: [2]i32, buf: ^Offscreen_Buffer) {
 	win.StretchDIBits(
 		device_context,
 		0,
 		0,
-		window_width,
-		window_height,
+		window_dims.x,
+		window_dims.y,
 		0,
 		0,
 		buf.width,
@@ -194,26 +204,25 @@ win_proc :: proc "stdcall" (
 	res: win.LRESULT
 
 	switch (message) {
-	case win.WM_SIZE:
-		rect: win.RECT
-		win.GetClientRect(window, &rect)
-		width := rect.right - rect.left
-		height := rect.bottom - rect.top
-		if (back_buffer.info.bmiHeader.biWidth != width ||
-			   back_buffer.info.bmiHeader.biHeight != height) {
-			resize_dib_section(&back_buffer, width, height)
-		}
+	// case win.WM_SIZE:
+	// 	dims := dimensions(window)
+	// 	if (back_buffer.info.bmiHeader.biWidth != dims.x ||
+	// 		   back_buffer.info.bmiHeader.biHeight != dims.y) {
+	// 		resize_dib_section(&back_buffer, dims.x, dims.y)
+	// 	}
 	case win.WM_DESTROY:
 	case win.WM_CLOSE:
 		running = false
 	case win.WM_PAINT:
 		paint: win.PAINTSTRUCT
 		ctx := win.BeginPaint(window, &paint)
-		rect := paint.rcPaint
-		width := rect.right - rect.left
-		height := rect.bottom - rect.top
+
+		dirty_dims := dimensions(paint.rcPaint)
+
 		// win.PatBlt(ctx, rect.left, rect.top, width, height, win.BLACKNESS)
-		display_buffer(ctx, rect, &back_buffer, 0, 0, width, height)
+
+		dims := dimensions(window)
+		display_buffer(ctx, dims, &back_buffer)
 		win.EndPaint(window, &paint)
 	}
 

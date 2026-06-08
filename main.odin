@@ -8,7 +8,7 @@ import win "core:sys/windows"
 // I use `dims` to mean the dimensions of a thing
 // so dims.x is with and dims.y is height
 
-running := false
+global_running := false
 
 dimensions :: proc {
 	dimensions_rect,
@@ -34,7 +34,7 @@ Offscreen_Buffer :: struct {
 	bytes_per_pixel: i32,
 }
 
-back_buffer: Offscreen_Buffer = {
+global_back_buffer: Offscreen_Buffer = {
 	bytes_per_pixel = 4,
 }
 
@@ -171,7 +171,7 @@ win_proc :: proc "stdcall" (
 	// 	}
 	case win.WM_DESTROY:
 	case win.WM_CLOSE:
-		running = false
+		global_running = false
 	case win.WM_PAINT:
 		paint: win.PAINTSTRUCT
 		ctx := win.BeginPaint(window, &paint)
@@ -181,7 +181,7 @@ win_proc :: proc "stdcall" (
 		// win.PatBlt(ctx, rect.left, rect.top, width, height, win.BLACKNESS)
 
 		dims := dimensions(window)
-		display_buffer(ctx, dims, &back_buffer)
+		display_buffer(ctx, dims, &global_back_buffer)
 		win.EndPaint(window, &paint)
 	}
 
@@ -195,18 +195,18 @@ main :: proc() {
 	// win.ShowWindow(hwnd, nCmdShow)
 	// win.UpdateWindow(hwnd)
 
-	buffer_resize(&back_buffer, {1280, 720})
+	buffer_resize(&global_back_buffer, {1280, 720})
 
 
-	running = true
+	global_running = true
 	msg: win.MSG
 	res: win.LRESULT = 1
 	offset: [2]i32 = {0, 0}
 
-	for res > 0 && running {
+	for res > 0 && global_running {
 		for win.PeekMessageA(&msg, nil, 0, 0, win.PM_REMOVE) {
 			if msg.message == win.WM_QUIT {
-				running = false
+				global_running = false
 			}
 
 			win.TranslateMessage(&msg)
@@ -223,11 +223,11 @@ main :: proc() {
 		// }
 
 
-		render_gradient(&back_buffer, offset)
+		render_gradient(&global_back_buffer, offset)
 		dc := win.GetDC(window)
 
 		dims := dimensions(window)
-		display_buffer(dc, dims, &back_buffer)
+		display_buffer(dc, dims, &global_back_buffer)
 		win.ReleaseDC(window, dc)
 	}
 

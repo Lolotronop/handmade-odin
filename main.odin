@@ -276,7 +276,6 @@ main :: proc() {
 				// controller is there
 				pad := state.Gamepad
 				if .A in pad.wButtons {
-					offset.y += 1
 					vib := win.XINPUT_VIBRATION {
 						wLeftMotorSpeed  = u16(6000),
 						wRightMotorSpeed = u16(6000),
@@ -289,6 +288,9 @@ main :: proc() {
 					}
 					xinput_set_state(win.XUSER(controller_index), &vib)
 				}
+
+				offset.x += i32(pad.sThumbLX) / 2048
+				offset.y -= i32(pad.sThumbLY) / 2048
 			} else {
 				// no controller :(
 			}

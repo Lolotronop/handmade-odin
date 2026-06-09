@@ -1,6 +1,7 @@
 package handmade_odin
 
 import "base:runtime"
+import "core:fmt"
 import "core:mem"
 import os "core:os"
 import win "core:sys/windows"
@@ -99,8 +100,8 @@ buffer_resize :: proc(buf: ^Offscreen_Buffer, dims: [2]i32) {
 	buf.info.bmiHeader.biBitCount = 32
 	buf.info.bmiHeader.biCompression = win.BI_RGB
 
-	err: mem.Allocator_Error
 	bitmap_size: uint = uint(buf.width * buf.height * buf.bytes_per_pixel)
+	pitch := buf.width * buf.bytes_per_pixel
 
 	buf.memory = cast([^]u8)(win.VirtualAlloc(
 			nil,
@@ -108,10 +109,6 @@ buffer_resize :: proc(buf: ^Offscreen_Buffer, dims: [2]i32) {
 			win.MEM_COMMIT,
 			win.PAGE_READWRITE,
 		))
-
-	// render_gradient(width, height, 128, 0)
-
-	pitch := buf.width * buf.bytes_per_pixel
 }
 
 render_gradient :: proc(buf: ^Offscreen_Buffer, offset: [2]i32) {
@@ -158,17 +155,9 @@ win_proc :: proc "stdcall" (
 ) -> win.LRESULT {
 	context = runtime.default_context()
 
-	// fmt.printfln("Message: %v %v", message, wparam)
-
 	res: win.LRESULT
 
 	switch (message) {
-	// case win.WM_SIZE:
-	// 	dims := dimensions(window)
-	// 	if (back_buffer.info.bmiHeader.biWidth != dims.x ||
-	// 		   back_buffer.info.bmiHeader.biHeight != dims.y) {
-	// 		resize_dib_section(&back_buffer, dims.x, dims.y)
-	// 	}
 	case win.WM_DESTROY:
 	case win.WM_CLOSE:
 		global_running = false
@@ -177,8 +166,6 @@ win_proc :: proc "stdcall" (
 		ctx := win.BeginPaint(window, &paint)
 
 		dirty_dims := dimensions(paint.rcPaint)
-
-		// win.PatBlt(ctx, rect.left, rect.top, width, height, win.BLACKNESS)
 
 		dims := dimensions(window)
 		display_buffer(ctx, dims, &global_back_buffer)
@@ -193,8 +180,6 @@ win_proc :: proc "stdcall" (
 main :: proc() {
 	instance, lpCmdLine, startup_info := kinda_winmain()
 	window := create_window(instance)
-	// win.ShowWindow(hwnd, nCmdShow)
-	// win.UpdateWindow(hwnd)
 
 	buffer_resize(&global_back_buffer, {1280, 720})
 
@@ -214,15 +199,21 @@ main :: proc() {
 			win.DispatchMessageW(&msg)
 		}
 
+		for controller_index: win.DWORD;
+		    controller_index < win.XUSER_MAX_COUNT;
+		    controller_index += 1 {
+			state: win.XINPUT_STATE
+			res := win.XInputGetState(win.XUSER(controller_index), &state)
+			if (res == .SUCCESS) {
+				// controller is there
+				pad := state.Gamepad
+				fmt.println(pad)
+			} else {
+				// no controller :(
+			}
+		}
+
 		offset.xy += 1
-
-		// if offset.x >= 256 {
-		// 	offset.x = 0
-		// }
-		// if offset.y >= 256 {
-		// 	offset.y = 0
-		// }
-
 
 		render_gradient(&global_back_buffer, offset)
 		dc := win.GetDC(window)

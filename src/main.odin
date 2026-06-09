@@ -9,12 +9,13 @@ import win "core:sys/windows"
 // I use `dims` to mean the dimensions of a thing
 // so dims.x is with and dims.y is height
 
-load_win_proc :: proc(module: win.HMODULE, name: cstring, destination: rawptr) {
+load_win_proc :: proc(module: win.HMODULE, name: cstring, destination: rawptr) -> bool {
 	loaded := win.GetProcAddress(module, name)
 
 	if loaded != nil {
 		dest := cast(^uintptr)(destination)
 		dest^ = auto_cast loaded
+		return true
 	}
 
 	when ODIN_DEBUG {
@@ -22,6 +23,8 @@ load_win_proc :: proc(module: win.HMODULE, name: cstring, destination: rawptr) {
 			fmt.printfln("Failed to load %cs", name)
 		}
 	}
+
+	return false
 }
 
 xinput_get_state: type_of(win.XInputGetState) = proc "stdcall" (
@@ -40,11 +43,9 @@ xinput_set_state: type_of(win.XInputSetState) = proc "stdcall" (
 
 xinput_load :: proc() {
 	candidates: []win.LPCWSTR = {
-		win.L("xinput1_3.dll"),
-		win.L("xinput1_4.dll"),
 		win.L("xinput9_1_0.dll"),
-		win.L("xinput1_2.dll"),
-		win.L("xinput1_1.dll"),
+		win.L("xinput1_4.dll"),
+		win.L("xinput1_3.dll"),
 	}
 
 	xinput: win.HMODULE = nil
@@ -65,14 +66,72 @@ xinput_load :: proc() {
 	load_win_proc(xinput, "XInputSetState", &xinput_set_state)
 }
 
-dsound_load :: proc() {
+dsound_load :: proc() -> (ok: bool) {
+	ok = false
+
 	dsound := win.LoadLibraryW(win.L("dsound.dll"))
 	if dsound == nil {
 		fmt.println("Failed to load dsound")
 		return
 	}
 
-	load_win_proc(dsound, "DirectSoundCreate", &direct_sound_create)
+	load_win_proc(dsound, "DirectSoundCreate", &direct_sound_create) or_return
+
+	return true
+}
+
+dsound_init :: proc(window: win.HWND, samplerate: u32, buffer_size: u32) {
+	if !dsound_load() {
+		fmt.println("Failed to load dsound")
+		return
+	}
+
+	ds: LPDIRECTSOUND
+	direct_sound_create(nil, &ds, nil)
+
+	if res := ds.SetCooperativeLevel(ds, window, DSSCL_PRIORITY); res != 0 {
+		fmt.printfln("Failed to set cooperative level 0x%x", u32(res))
+		return
+	}
+
+	format := win.WAVEFORMATEX {
+		wFormatTag     = WAVE_FORMAT_PCM,
+		nChannels      = 2,
+		nSamplesPerSec = samplerate,
+		wBitsPerSample = 16,
+	}
+	format.nBlockAlign = format.nChannels * format.wBitsPerSample / 8
+	format.nAvgBytesPerSec = format.nSamplesPerSec * win.DWORD(format.nBlockAlign)
+
+
+	secondary_buffer_description := DSBUFFERDESC {
+		dwSize        = size_of(DSBUFFERDESC),
+		dwFlags       = DSBCAPS_PRIMARYBUFFER,
+		dwBufferBytes = 0,
+	}
+	primary_buffer: LPDIRECTSOUNDBUFFER
+
+	if res := ds.CreateSoundBuffer(ds, &secondary_buffer_description, &primary_buffer, nil);
+	   res != 0 {
+		fmt.printfln("Failed to create primary buffer 0x%x", u32(res))
+		return
+	}
+	if res := primary_buffer.SetFormat(primary_buffer, &format); res != 0 {
+		fmt.printfln("Failed to set format 0x%x", u32(res))
+		return
+	}
+
+	buffer_description := DSBUFFERDESC {
+		dwSize        = size_of(DSBUFFERDESC),
+		dwBufferBytes = buffer_size,
+		lpwfxFormat   = &format,
+	}
+	buffer: LPDIRECTSOUNDBUFFER
+
+	if res := ds.CreateSoundBuffer(ds, &buffer_description, &buffer, nil); res != 0 {
+		fmt.printfln("Failed to create secondary buffer 0x%x", u32(res))
+		return
+	}
 }
 
 global_running := false
@@ -287,7 +346,7 @@ main :: proc() {
 	instance, lpCmdLine, startup_info := kinda_winmain()
 	window := create_window(instance)
 	xinput_load()
-	dsound_load()
+	dsound_init(window, 48000, 48000 * size_of(i16) * 2)
 
 	buffer_resize(&global_back_buffer, {1280, 720})
 

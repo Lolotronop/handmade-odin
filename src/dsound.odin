@@ -9,19 +9,12 @@ import win "core:sys/windows"
 LPDIRECTSOUND :: ^IDirectSound
 LPDIRECTSOUNDBUFFER :: ^IDirectSoundBuffer
 
-DirectSoundCreate_Proc :: proc "stdcall" (
-	pcGuidDevice: win.LPCGUID,
-	pDS: ^LPDIRECTSOUND,
-	pUnkOuter: win.LPUNKNOWN,
-) -> win.HRESULT
-
 DS_OK :: win.HRESULT(0)
 DSERR_GENERIC :: win.HRESULT(-2005401590) // 0x8878000A: Generic DirectSound failure.
 DSERR_NODRIVER :: win.HRESULT(-2005401480) // 0x88780078: No sound driver is available.
 DSERR_INVALIDPARAM :: win.HRESULT(-2005401570) // 0x8878001E
 
-// Stub used until dsound_load() successfully overwrites direct_sound_create.
-direct_sound_create: DirectSoundCreate_Proc = proc "stdcall" (
+direct_sound_create := proc "stdcall" (
 	pcGuidDevice: win.LPCGUID,
 	pDS: ^LPDIRECTSOUND,
 	pUnkOuter: win.LPUNKNOWN,

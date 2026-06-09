@@ -189,7 +189,31 @@ win_proc :: proc "stdcall" (
 	res: win.LRESULT
 
 	switch (message) {
+	case win.WM_SYSKEYDOWN:
+		fallthrough
+	case win.WM_SYSKEYUP:
+		fallthrough
+	case win.WM_KEYDOWN:
+		fallthrough
+	case win.WM_KEYUP:
+		keycode := wparam
+		was_down: bool = (lparam & (1 << 30)) != 0
+		is_down: bool = (lparam & (1 << 31)) == 0
+
+		if (was_down != is_down) { 	// filter repeats
+			if (keycode == 'W') {
+				fmt.println("W")
+			} else if (keycode == 'A') {
+				fmt.println("A")
+			} else if (keycode == 'S') {
+				fmt.println("S")
+			} else if (keycode == 'D') {
+				fmt.println("D")
+			}
+		}
+
 	case win.WM_DESTROY:
+		fallthrough
 	case win.WM_CLOSE:
 		global_running = false
 	case win.WM_PAINT:

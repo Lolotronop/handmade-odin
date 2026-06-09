@@ -9,35 +9,38 @@ import win "core:sys/windows"
 // I use `dims` to mean the dimensions of a thing
 // so dims.x is with and dims.y is height
 
-xinput_get_state := proc "c" (user: win.XUSER, pState: ^win.XINPUT_STATE) -> win.System_Error {
+load_win_proc :: proc(module: win.HMODULE, name: cstring, destination: rawptr) {
+	loaded := win.GetProcAddress(module, name)
+	if loaded != nil {
+		dest := cast(^uintptr)(destination)
+		dest^ = auto_cast loaded
+	}
+}
+
+xinput_get_state: type_of(win.XInputGetState) = proc "stdcall" (
+	user: win.XUSER,
+	pState: ^win.XINPUT_STATE,
+) -> win.System_Error {
 	return .DEVICE_NOT_CONNECTED
 }
 
-xinput_set_state := proc "c" (
+xinput_set_state: type_of(win.XInputSetState) = proc "stdcall" (
 	user: win.XUSER,
 	pVibration: ^win.XINPUT_VIBRATION,
 ) -> win.System_Error {
 	return .DEVICE_NOT_CONNECTED
 }
 
+
 xinput_load :: proc() {
 	xinput := win.LoadLibraryW(win.L("xinput1_3.dll"))
-	if (xinput == nil) {
+	if xinput == nil {
 		fmt.println("Failed to load xinput")
 		return
 	}
 
-	loaded_get := win.GetProcAddress(xinput, "XInputGetState")
-	if (loaded_get != nil) {
-		xinput_get_state = auto_cast loaded_get
-		fmt.println("loaded_get xinput_get_state")
-	}
-
-	loaded_set := win.GetProcAddress(xinput, "XInputSetState")
-	if (loaded_set != nil) {
-		xinput_set_state = auto_cast loaded_set
-		fmt.println("loaded_set xinput_set_state")
-	}
+	load_win_proc(xinput, "XInputGetState", &xinput_get_state)
+	load_win_proc(xinput, "XInputSetState", &xinput_set_state)
 }
 
 global_running := false

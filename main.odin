@@ -9,6 +9,37 @@ import win "core:sys/windows"
 // I use `dims` to mean the dimensions of a thing
 // so dims.x is with and dims.y is height
 
+xinput_get_state := proc "c" (user: win.XUSER, pState: ^win.XINPUT_STATE) -> win.System_Error {
+	return .DEVICE_NOT_CONNECTED
+}
+
+xinput_set_state := proc "c" (
+	user: win.XUSER,
+	pVibration: ^win.XINPUT_VIBRATION,
+) -> win.System_Error {
+	return .DEVICE_NOT_CONNECTED
+}
+
+xinput_load :: proc() {
+	xinput := win.LoadLibraryW(win.L("xinput1_3.dll"))
+	if (xinput == nil) {
+		fmt.println("Failed to load xinput")
+		return
+	}
+
+	loaded_get := win.GetProcAddress(xinput, "XInputGetState")
+	if (loaded_get != nil) {
+		xinput_get_state = auto_cast loaded_get
+		fmt.println("loaded_get xinput_get_state")
+	}
+
+	loaded_set := win.GetProcAddress(xinput, "XInputSetState")
+	if (loaded_set != nil) {
+		xinput_set_state = auto_cast loaded_set
+		fmt.println("loaded_set xinput_set_state")
+	}
+}
+
 global_running := false
 
 dimensions :: proc {
@@ -180,6 +211,7 @@ win_proc :: proc "stdcall" (
 main :: proc() {
 	instance, lpCmdLine, startup_info := kinda_winmain()
 	window := create_window(instance)
+	xinput_load()
 
 	buffer_resize(&global_back_buffer, {1280, 720})
 
@@ -203,11 +235,13 @@ main :: proc() {
 		    controller_index < win.XUSER_MAX_COUNT;
 		    controller_index += 1 {
 			state: win.XINPUT_STATE
-			res := win.XInputGetState(win.XUSER(controller_index), &state)
+			res := xinput_get_state(win.XUSER(controller_index), &state)
 			if (res == .SUCCESS) {
 				// controller is there
 				pad := state.Gamepad
-				fmt.println(pad)
+				if .A in pad.wButtons {
+					offset.y += 1
+				}
 			} else {
 				// no controller :(
 			}

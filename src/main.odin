@@ -80,6 +80,10 @@ dsound_load :: proc() -> (ok: bool) {
 	return true
 }
 
+
+global_audio_buffer: LPDIRECTSOUNDBUFFER
+
+
 dsound_init :: proc(window: win.HWND, samplerate: u32, buffer_size: u32) {
 	if !dsound_load() {
 		fmt.println("Failed to load dsound")
@@ -87,6 +91,7 @@ dsound_init :: proc(window: win.HWND, samplerate: u32, buffer_size: u32) {
 	}
 
 	ds: LPDIRECTSOUND
+
 	direct_sound_create(nil, &ds, nil)
 
 	if res := ds.SetCooperativeLevel(ds, window, DSSCL_PRIORITY); res != 0 {
@@ -126,9 +131,8 @@ dsound_init :: proc(window: win.HWND, samplerate: u32, buffer_size: u32) {
 		dwBufferBytes = buffer_size,
 		lpwfxFormat   = &format,
 	}
-	buffer: LPDIRECTSOUNDBUFFER
 
-	if res := ds.CreateSoundBuffer(ds, &buffer_description, &buffer, nil); res != 0 {
+	if res := ds.CreateSoundBuffer(ds, &buffer_description, &global_audio_buffer, nil); res != 0 {
 		fmt.printfln("Failed to create secondary buffer 0x%x", u32(res))
 		return
 	}
@@ -209,7 +213,7 @@ create_window :: proc(instance: win.HINSTANCE) -> win.HWND {
 	return hwnd
 }
 
-buffer_resize :: proc(buf: ^Offscreen_Buffer, dims: [2]i32) {
+offscreen_buffer_resize :: proc(buf: ^Offscreen_Buffer, dims: [2]i32) {
 	if (buf.memory != nil) {
 		win.VirtualFree(buf.memory, 0, win.MEM_RELEASE)
 	}
@@ -231,7 +235,7 @@ buffer_resize :: proc(buf: ^Offscreen_Buffer, dims: [2]i32) {
 	buf.memory = cast([^]u8)(win.VirtualAlloc(
 			nil,
 			bitmap_size,
-			win.MEM_COMMIT,
+			win.MEM_COMMIT | win.MEM_RESERVE,
 			win.PAGE_READWRITE,
 		))
 }
@@ -342,19 +346,29 @@ win_proc :: proc "stdcall" (
 	return res
 }
 
+SAMPLE_RATE :: 48000
+BYTES_PER_SAMPLE :: 4 // LEFT(i16) RIGHT(i16)
+
 main :: proc() {
 	instance, lpCmdLine, startup_info := kinda_winmain()
 	window := create_window(instance)
 	xinput_load()
-	dsound_init(window, 48000, 48000 * size_of(i16) * 2)
+	audio_buffer_size: u32 = SAMPLE_RATE * BYTES_PER_SAMPLE
+	dsound_init(window, SAMPLE_RATE, audio_buffer_size)
 
-	buffer_resize(&global_back_buffer, {1280, 720})
-
+	offscreen_buffer_resize(&global_back_buffer, {1280, 720})
 
 	global_running = true
 	msg: win.MSG
 	res: win.LRESULT = 1
 	offset: [2]i32 = {0, 0}
+
+	square_freq: u32 = 100
+	square_wave_period: u32 = SAMPLE_RATE / square_freq
+	running_sample_index: u32 = 0
+
+
+	global_audio_buffer.Play(global_audio_buffer, 0, 0, DSBPLAY_LOOPING)
 
 	for res > 0 && global_running {
 		for win.PeekMessageA(&msg, nil, 0, 0, win.PM_REMOVE) {
@@ -399,6 +413,84 @@ main :: proc() {
 
 		render_gradient(&global_back_buffer, offset)
 		dc := win.GetDC(window)
+
+		play_cursor: win.DWORD
+		write_cursor: win.DWORD
+		global_audio_buffer.GetCurrentPosition(global_audio_buffer, &play_cursor, &write_cursor)
+
+		byte_to_lock := running_sample_index * BYTES_PER_SAMPLE % audio_buffer_size
+
+		bytes_to_write: u32
+		// [??????P--------Bwwwwwwwwwww]
+		if (byte_to_lock > play_cursor) {
+			bytes_to_write = audio_buffer_size - byte_to_lock
+		}
+		// [---BwwwwwwwwP--------------]
+		if (byte_to_lock < play_cursor) {
+			bytes_to_write = play_cursor - byte_to_lock
+		}
+
+		region1: win.VOID
+		region1_size: win.DWORD
+		region2: win.VOID
+		region2_size: win.DWORD
+		global_audio_buffer.Lock(
+			global_audio_buffer,
+			byte_to_lock,
+			bytes_to_write,
+			&region1,
+			&region1_size,
+			&region2,
+			&region2_size,
+			0,
+		)
+
+		sample_out := cast(^i16)region1
+		region1_sample_count := region1_size / BYTES_PER_SAMPLE
+		for sample_index: win.DWORD; sample_index < region1_sample_count; sample_index += 1 {
+
+			sample_value: i16 =
+				((running_sample_index / (square_wave_period / 2)) % 2 == 0) ? -1 : 1
+			sample_value *= 1000
+
+			left := sample_value
+			right := sample_value
+
+			sample_out^ = left
+			sample_out = mem.ptr_offset(sample_out, 1)
+
+			sample_out^ = right
+			sample_out = mem.ptr_offset(sample_out, 1)
+			running_sample_index += 1
+		}
+
+
+		sample_out = cast([^]i16)region2
+		region2_sample_count := region2_size / BYTES_PER_SAMPLE
+		for sample_index: win.DWORD; sample_index < region2_sample_count; sample_index += 1 {
+
+			sample_value: i16 =
+				((running_sample_index / (square_wave_period / 2)) % 2 == 0) ? -1 : 1
+			sample_value *= 1000
+
+			left := sample_value
+			right := sample_value
+
+			sample_out^ = left
+			sample_out = mem.ptr_offset(sample_out, 1)
+
+			sample_out^ = right
+			sample_out = mem.ptr_offset(sample_out, 1)
+			running_sample_index += 1
+		}
+
+		global_audio_buffer.Unlock(
+			global_audio_buffer,
+			region1,
+			region1_size,
+			region2,
+			region2_size,
+		)
 
 		dims := dimensions(window)
 		display_buffer(dc, dims, &global_back_buffer)

@@ -31,9 +31,24 @@ xinput_set_state: type_of(win.XInputSetState) = proc "stdcall" (
 	return .DEVICE_NOT_CONNECTED
 }
 
-
 xinput_load :: proc() {
-	xinput := win.LoadLibraryW(win.L("xinput1_3.dll"))
+	candidates: []win.LPCWSTR = {
+		win.L("xinput1_3.dll"),
+		win.L("xinput1_4.dll"),
+		win.L("xinput9_1_0.dll"),
+		win.L("xinput1_2.dll"),
+		win.L("xinput1_1.dll"),
+	}
+
+	xinput: win.HMODULE = nil
+
+	for candidate in candidates {
+		xinput = win.LoadLibraryW(candidate)
+		if xinput != nil {
+			break
+		}
+	}
+
 	if xinput == nil {
 		fmt.println("Failed to load xinput")
 		return

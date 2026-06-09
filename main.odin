@@ -214,20 +214,27 @@ win_proc :: proc "stdcall" (
 	case win.WM_KEYDOWN:
 		fallthrough
 	case win.WM_KEYUP:
-		is_bit_set :: #force_inline proc(mask: u32, bit: u32) -> bool {
+		has_bit :: #force_inline proc(mask: u32, bit: u32) -> bool {
 			when ODIN_DEBUG {assert(bit < 32)}
 			return (mask & (1 << bit)) != 0
 		}
 
 		IS_UP_BIT :: 31
 		WAS_DOWN_BIT :: 30
+		ALT_DOWN_BIT :: 29
 
 		keycode := wparam
 		key_parameters := u32(lparam)
-		was_down: bool = is_bit_set(key_parameters, WAS_DOWN_BIT)
-		is_down: bool = !is_bit_set(key_parameters, IS_UP_BIT)
+
+		was_down: bool = has_bit(key_parameters, WAS_DOWN_BIT)
+		is_down: bool = !has_bit(key_parameters, IS_UP_BIT)
+		alt_down: bool = has_bit(key_parameters, ALT_DOWN_BIT)
 
 		if (was_down != is_down) { 	// filter repeats
+			if (alt_down && keycode == win.VK_F4) {
+				global_running = false
+			}
+
 			if (keycode == 'W') {
 				fmt.println("W")
 			} else if (keycode == 'A') {

@@ -11,9 +11,16 @@ import win "core:sys/windows"
 
 load_win_proc :: proc(module: win.HMODULE, name: cstring, destination: rawptr) {
 	loaded := win.GetProcAddress(module, name)
+
 	if loaded != nil {
 		dest := cast(^uintptr)(destination)
 		dest^ = auto_cast loaded
+	}
+
+	when ODIN_DEBUG {
+		if loaded == nil {
+			fmt.printfln("Failed to load %cs", name)
+		}
 	}
 }
 
@@ -56,6 +63,16 @@ xinput_load :: proc() {
 
 	load_win_proc(xinput, "XInputGetState", &xinput_get_state)
 	load_win_proc(xinput, "XInputSetState", &xinput_set_state)
+}
+
+dsound_load :: proc() {
+	dsound := win.LoadLibraryW(win.L("dsound.dll"))
+	if dsound == nil {
+		fmt.println("Failed to load dsound")
+		return
+	}
+
+	load_win_proc(dsound, "DirectSoundCreate", &direct_sound_create)
 }
 
 global_running := false
@@ -270,6 +287,7 @@ main :: proc() {
 	instance, lpCmdLine, startup_info := kinda_winmain()
 	window := create_window(instance)
 	xinput_load()
+	dsound_load()
 
 	buffer_resize(&global_back_buffer, {1280, 720})
 

@@ -3,7 +3,7 @@ vim.keymap.set('n', '<leader>c', function()
         vim.notify("Killed")
 
         local time = vim.loop.hrtime()
-        vim.system({ 'odin', 'build', '.', '--debug' }, nil, function()
+        vim.system({ 'cmd', '/c', 'build.bat' }, nil, function()
             local elapsed = vim.loop.hrtime() - time
             vim.notify("Build in " .. elapsed / 1000000 .. " ms")
 

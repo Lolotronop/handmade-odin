@@ -350,6 +350,82 @@ win_proc :: proc "stdcall" (
 SAMPLE_RATE :: 48000
 BYTES_PER_SAMPLE :: 4 // LEFT(i16) RIGHT(i16)
 
+Sound_Output :: struct {
+	sample_rate:          u32,
+	freq:                 u32,
+	volume:               f32, // 0.0 - 1.0
+	wave_period:          u32,
+	bytes_per_sample:     u32,
+	buffer_size:          u32,
+	running_sample_index: u32,
+}
+
+fill_sound_buffer :: proc(sound_output: ^Sound_Output, byte_to_lock: u32, bytes_to_write: u32) {
+	region1: win.VOID
+	region1_size: win.DWORD
+	region2: win.VOID
+	region2_size: win.DWORD
+	global_audio_buffer.Lock(
+		global_audio_buffer,
+		byte_to_lock,
+		bytes_to_write,
+		&region1,
+		&region1_size,
+		&region2,
+		&region2_size,
+		0,
+	)
+
+	sample_out := cast(^i16)region1
+	region1_sample_count := region1_size / BYTES_PER_SAMPLE
+	for sample_index: win.DWORD; sample_index < region1_sample_count; sample_index += 1 {
+
+		t :=
+			math.TAU *
+			cast(f32)sound_output.running_sample_index /
+			cast(f32)sound_output.wave_period
+		sine_value: f32 = math.sin(t)
+
+		sample_value := cast(i16)(sine_value * sound_output.volume * cast(f32)(2 << 14))
+
+		left := sample_value
+		right := sample_value
+
+		sample_out^ = left
+		sample_out = mem.ptr_offset(sample_out, 1)
+
+		sample_out^ = right
+		sample_out = mem.ptr_offset(sample_out, 1)
+		sound_output.running_sample_index += 1
+	}
+
+
+	sample_out = cast([^]i16)region2
+	region2_sample_count := region2_size / BYTES_PER_SAMPLE
+	for sample_index: win.DWORD; sample_index < region2_sample_count; sample_index += 1 {
+
+		t :=
+			math.TAU *
+			cast(f32)sound_output.running_sample_index /
+			cast(f32)sound_output.wave_period
+		sine_value: f32 = math.sin(t)
+
+		sample_value := cast(i16)(sine_value * sound_output.volume * math.F16_MAX)
+
+		left := sample_value
+		right := sample_value
+
+		sample_out^ = left
+		sample_out = mem.ptr_offset(sample_out, 1)
+
+		sample_out^ = right
+		sample_out = mem.ptr_offset(sample_out, 1)
+		sound_output.running_sample_index += 1
+	}
+
+	global_audio_buffer.Unlock(global_audio_buffer, region1, region1_size, region2, region2_size)
+}
+
 main :: proc() {
 	instance, lpCmdLine, startup_info := kinda_winmain()
 	window := create_window(instance)
@@ -365,10 +441,19 @@ main :: proc() {
 	offset: [2]i32 = {0, 0}
 
 	freq: u32 = 256
-	wave_period: u32 = SAMPLE_RATE / freq
-	running_sample_index: u32 = 0
+	sound_output: Sound_Output = {
+		sample_rate          = SAMPLE_RATE,
+		freq                 = freq,
+		wave_period          = SAMPLE_RATE / freq,
+		volume               = 0.4,
+		bytes_per_sample     = BYTES_PER_SAMPLE,
+		buffer_size          = audio_buffer_size,
+		running_sample_index = 0,
+	}
 
-	sound_is_playing := false
+
+	fill_sound_buffer(&sound_output, 0, sound_output.buffer_size)
+	global_audio_buffer.Play(global_audio_buffer, 0, 0, DSBPLAY_LOOPING)
 
 
 	for res > 0 && global_running {
@@ -417,104 +502,23 @@ main :: proc() {
 
 		play_cursor: win.DWORD
 		write_cursor: win.DWORD
+		global_audio_buffer.GetCurrentPosition(global_audio_buffer, &play_cursor, &write_cursor)
 
-		if (!sound_is_playing) {
-			// if (true) {
+		byte_to_lock :=
+			(sound_output.running_sample_index * sound_output.bytes_per_sample) %
+			sound_output.buffer_size
 
-			global_audio_buffer.GetCurrentPosition(
-				global_audio_buffer,
-				&play_cursor,
-				&write_cursor,
-			)
+		bytes_to_write: u32 = 0
 
-			byte_to_lock := running_sample_index * BYTES_PER_SAMPLE % audio_buffer_size
-
-			bytes_to_write: u32
-			if byte_to_lock == play_cursor && !sound_is_playing {
-				bytes_to_write = audio_buffer_size
-			}
-
-			// [??????P--------Bwwwwwwwwwww]
-			if byte_to_lock > play_cursor {
-				bytes_to_write = audio_buffer_size - byte_to_lock
-			}
-			// [---BwwwwwwwwP--------------]
-			if byte_to_lock < play_cursor {
-				bytes_to_write = play_cursor - byte_to_lock
-			}
-
-			region1: win.VOID
-			region1_size: win.DWORD
-			region2: win.VOID
-			region2_size: win.DWORD
-			global_audio_buffer.Lock(
-				global_audio_buffer,
-				byte_to_lock,
-				bytes_to_write,
-				&region1,
-				&region1_size,
-				&region2,
-				&region2_size,
-				0,
-			)
-
-			sample_out := cast(^i16)region1
-			region1_sample_count := region1_size / BYTES_PER_SAMPLE
-			for sample_index: win.DWORD; sample_index < region1_sample_count; sample_index += 1 {
-
-				t := math.TAU * cast(f32)running_sample_index / cast(f32)wave_period
-				sine_value: f32 = math.sin(t)
-
-				VOLUME :: 1000
-				sample_value := cast(i16)(sine_value * VOLUME)
-
-				left := sample_value
-				right := sample_value
-
-				sample_out^ = left
-				sample_out = mem.ptr_offset(sample_out, 1)
-
-				sample_out^ = right
-				sample_out = mem.ptr_offset(sample_out, 1)
-				running_sample_index += 1
-			}
-
-
-			sample_out = cast([^]i16)region2
-			region2_sample_count := region2_size / BYTES_PER_SAMPLE
-			for sample_index: win.DWORD; sample_index < region2_sample_count; sample_index += 1 {
-
-				t := math.TAU * cast(f32)running_sample_index / cast(f32)wave_period
-				sine_value: f32 = math.sin(t)
-
-				VOLUME :: 1000
-				sample_value := cast(i16)(sine_value * VOLUME)
-
-				left := sample_value
-				right := sample_value
-
-				sample_out^ = left
-				sample_out = mem.ptr_offset(sample_out, 1)
-
-				sample_out^ = right
-				sample_out = mem.ptr_offset(sample_out, 1)
-				running_sample_index += 1
-			}
-
-			global_audio_buffer.Unlock(
-				global_audio_buffer,
-				region1,
-				region1_size,
-				region2,
-				region2_size,
-			)
+		// [??????P--------Bwwwwwwwwwww]
+		if byte_to_lock > play_cursor {
+			bytes_to_write = sound_output.buffer_size - byte_to_lock
 		}
-
-
-		if (!sound_is_playing) {
-			global_audio_buffer.Play(global_audio_buffer, 0, 0, DSBPLAY_LOOPING)
-			sound_is_playing = true
+		// [---BwwwwwwwwP--------------]
+		if byte_to_lock < play_cursor {
+			bytes_to_write = play_cursor - byte_to_lock
 		}
+		fill_sound_buffer(&sound_output, byte_to_lock, bytes_to_write)
 
 
 		dims := dimensions(window)

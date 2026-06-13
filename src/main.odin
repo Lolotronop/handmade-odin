@@ -1,5 +1,6 @@
 package handmade_odin
 
+import "base:intrinsics"
 import "base:runtime"
 import "core:fmt"
 import "core:math"
@@ -464,6 +465,16 @@ main :: proc() {
 	global_audio_buffer.Play(global_audio_buffer, 0, 0, DSBPLAY_LOOPING)
 
 
+	end_counter: win.LARGE_INTEGER
+	last_counter: win.LARGE_INTEGER
+	win.QueryPerformanceCounter(&last_counter)
+
+	perf_frequency: win.LARGE_INTEGER
+	win.QueryPerformanceFrequency(&perf_frequency)
+
+	last_cycle_count := intrinsics.read_cycle_counter()
+
+	// last_cycle_cout := intrin
 	for res > 0 && global_running {
 		for win.PeekMessageA(&msg, nil, 0, 0, win.PM_REMOVE) {
 			if msg.message == win.WM_QUIT {
@@ -540,6 +551,25 @@ main :: proc() {
 		dims := dimensions(window)
 		display_buffer(dc, dims, &global_back_buffer)
 		win.ReleaseDC(window, dc)
+
+
+		end_cycle_count := intrinsics.read_cycle_counter()
+		cycle_count_elapsed := end_cycle_count - last_cycle_count
+		last_cycle_count = end_cycle_count
+
+		win.QueryPerformanceCounter(&end_counter)
+		counter_elapsed := end_counter - last_counter
+		perf_seconds := f64(counter_elapsed) / f64(perf_frequency)
+		perf_ms := perf_seconds * 1000.0
+		fps := u32(1000.0 / perf_ms)
+		last_counter = end_counter
+
+		fmt.printfln(
+			"MS: %f\tfps: %d\tMCycles: %d",
+			perf_ms,
+			fps,
+			cycle_count_elapsed / (1000 * 1000),
+		)
 	}
 
 	os.exit(cast(int)msg.wParam)

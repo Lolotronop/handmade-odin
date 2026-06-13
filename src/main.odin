@@ -352,12 +352,14 @@ BYTES_PER_SAMPLE :: 4 // LEFT(i16) RIGHT(i16)
 
 Sound_Output :: struct {
 	sample_rate:          u32,
-	freq:                 u32,
+	freq:                 f32,
 	volume:               f32, // 0.0 - 1.0
-	wave_period:          u32,
+	wave_period:          f32,
 	bytes_per_sample:     u32,
 	buffer_size:          u32,
 	running_sample_index: u32,
+	sine_t:               f32,
+	latency_samples:      u32,
 }
 
 fill_sound_buffer :: proc(sound_output: ^Sound_Output, byte_to_lock: u32, bytes_to_write: u32) {
@@ -380,11 +382,11 @@ fill_sound_buffer :: proc(sound_output: ^Sound_Output, byte_to_lock: u32, bytes_
 	region1_sample_count := region1_size / BYTES_PER_SAMPLE
 	for sample_index: win.DWORD; sample_index < region1_sample_count; sample_index += 1 {
 
-		t :=
-			math.TAU *
-			cast(f32)sound_output.running_sample_index /
-			cast(f32)sound_output.wave_period
-		sine_value: f32 = math.sin(t)
+		sine_value: f32 = math.sin(sound_output.sine_t)
+		sound_output.sine_t = math.mod(
+			sound_output.sine_t + math.TAU / sound_output.wave_period,
+			math.TAU,
+		)
 
 		sample_value := cast(i16)(sine_value * sound_output.volume * cast(f32)(2 << 14))
 
@@ -404,11 +406,11 @@ fill_sound_buffer :: proc(sound_output: ^Sound_Output, byte_to_lock: u32, bytes_
 	region2_sample_count := region2_size / BYTES_PER_SAMPLE
 	for sample_index: win.DWORD; sample_index < region2_sample_count; sample_index += 1 {
 
-		t :=
-			math.TAU *
-			cast(f32)sound_output.running_sample_index /
-			cast(f32)sound_output.wave_period
-		sine_value: f32 = math.sin(t)
+		sine_value: f32 = math.sin(sound_output.sine_t)
+		sound_output.sine_t = math.mod(
+			sound_output.sine_t + math.TAU / sound_output.wave_period,
+			math.TAU,
+		)
 
 		sample_value := cast(i16)(sine_value * sound_output.volume * math.F16_MAX)
 
@@ -440,19 +442,25 @@ main :: proc() {
 	res: win.LRESULT = 1
 	offset: [2]i32 = {0, 0}
 
-	freq: u32 = 256
+	freq: f32 = 256
 	sound_output: Sound_Output = {
 		sample_rate          = SAMPLE_RATE,
 		freq                 = freq,
-		wave_period          = SAMPLE_RATE / freq,
+		wave_period          = f32(SAMPLE_RATE) / freq,
 		volume               = 0.4,
 		bytes_per_sample     = BYTES_PER_SAMPLE,
 		buffer_size          = audio_buffer_size,
 		running_sample_index = 0,
+		sine_t               = 0.0,
+		latency_samples      = SAMPLE_RATE / 15,
 	}
 
 
-	fill_sound_buffer(&sound_output, 0, sound_output.buffer_size)
+	fill_sound_buffer(
+		&sound_output,
+		0,
+		sound_output.latency_samples * sound_output.bytes_per_sample,
+	)
 	global_audio_buffer.Play(global_audio_buffer, 0, 0, DSBPLAY_LOOPING)
 
 
@@ -490,6 +498,9 @@ main :: proc() {
 
 				offset.x += i32(pad.sThumbLX) / 2048
 				offset.y -= i32(pad.sThumbLY) / 2048
+
+				sound_output.freq = f32(512 + f32(pad.sThumbLY) / (math.pow_f32(2.0, 8.0)))
+				sound_output.wave_period = f32(SAMPLE_RATE) / f32(sound_output.freq)
 			} else {
 				// no controller :(
 			}
@@ -504,6 +515,11 @@ main :: proc() {
 		write_cursor: win.DWORD
 		global_audio_buffer.GetCurrentPosition(global_audio_buffer, &play_cursor, &write_cursor)
 
+		target_cursor :=
+			(play_cursor + sound_output.latency_samples * sound_output.bytes_per_sample) %
+			sound_output.buffer_size
+
+
 		byte_to_lock :=
 			(sound_output.running_sample_index * sound_output.bytes_per_sample) %
 			sound_output.buffer_size
@@ -511,12 +527,12 @@ main :: proc() {
 		bytes_to_write: u32 = 0
 
 		// [??????P--------Bwwwwwwwwwww]
-		if byte_to_lock > play_cursor {
+		if byte_to_lock > target_cursor {
 			bytes_to_write = sound_output.buffer_size - byte_to_lock
 		}
 		// [---BwwwwwwwwP--------------]
-		if byte_to_lock < play_cursor {
-			bytes_to_write = play_cursor - byte_to_lock
+		if byte_to_lock < target_cursor {
+			bytes_to_write = target_cursor - byte_to_lock
 		}
 		fill_sound_buffer(&sound_output, byte_to_lock, bytes_to_write)
 

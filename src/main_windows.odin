@@ -8,7 +8,7 @@ import "core:mem"
 import os "core:os"
 import win "core:sys/windows"
 
-import "../game"
+import "./game"
 
 // I use `dims` to mean the dimensions of a thing
 // so dims.x is with and dims.y is height

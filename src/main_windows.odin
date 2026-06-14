@@ -3,7 +3,6 @@ package handmade_odin
 import "base:intrinsics"
 import "base:runtime"
 import "core:fmt"
-import "core:math"
 import "core:mem"
 import os "core:os"
 import win "core:sys/windows"
@@ -118,6 +117,13 @@ dsound_init :: proc(window: win.HWND, samplerate: u32, buffer_size: u32) {
 		dwFlags       = DSBCAPS_PRIMARYBUFFER,
 		dwBufferBytes = 0,
 	}
+
+	// ----------------------------------------------
+	// this is most likely redundant on modern systems
+	// it is originally intended to set the sample rate
+	// of the actual device, but since on windows these
+	// days handles everything with a virtual mixer
+	// it should not be necessary. but I have not tested that
 	primary_buffer: LPDIRECTSOUNDBUFFER
 
 	if res := ds.CreateSoundBuffer(ds, &secondary_buffer_description, &primary_buffer, nil);
@@ -129,6 +135,7 @@ dsound_init :: proc(window: win.HWND, samplerate: u32, buffer_size: u32) {
 		fmt.printfln("Failed to set format 0x%x", u32(res))
 		return
 	}
+	// ----------------------------------------------
 
 	buffer_description := DSBUFFERDESC {
 		dwSize        = size_of(DSBUFFERDESC),
@@ -337,17 +344,18 @@ BYTES_PER_SAMPLE :: 4 // LEFT(i16) RIGHT(i16)
 
 Sound_Output :: struct {
 	sample_rate:          u32,
-	freq:                 f32,
-	volume:               f32, // 0.0 - 1.0
-	wave_period:          f32,
 	bytes_per_sample:     u32,
 	buffer_size:          u32,
 	running_sample_index: u32,
-	sine_t:               f32,
 	latency_samples:      u32,
 }
 
-fill_sound_buffer :: proc(sound_output: ^Sound_Output, byte_to_lock: u32, bytes_to_write: u32) {
+fill_sound_buffer :: proc(
+	sound_output: ^Sound_Output,
+	byte_to_lock: u32,
+	bytes_to_write: u32,
+	source_buffer: ^game.Sound_Output_Buffer,
+) {
 	region1: win.VOID
 	region1_size: win.DWORD
 	region2: win.VOID
@@ -363,52 +371,10 @@ fill_sound_buffer :: proc(sound_output: ^Sound_Output, byte_to_lock: u32, bytes_
 		0,
 	)
 
-	sample_out := cast(^i16)region1
-	region1_sample_count := region1_size / BYTES_PER_SAMPLE
-	for sample_index: win.DWORD; sample_index < region1_sample_count; sample_index += 1 {
+	mem.copy(region1, &source_buffer.samples[0], int(region1_size))
+	mem.copy(region2, &source_buffer.samples[region1_size / 2], int(region2_size))
 
-		sine_value: f32 = math.sin(sound_output.sine_t)
-		sound_output.sine_t = math.mod(
-			sound_output.sine_t + math.TAU / sound_output.wave_period,
-			math.TAU,
-		)
-
-		sample_value := cast(i16)(sine_value * sound_output.volume * cast(f32)(2 << 14))
-
-		left := sample_value
-		right := sample_value
-
-		sample_out^ = left
-		sample_out = mem.ptr_offset(sample_out, 1)
-
-		sample_out^ = right
-		sample_out = mem.ptr_offset(sample_out, 1)
-		sound_output.running_sample_index += 1
-	}
-
-
-	sample_out = cast([^]i16)region2
-	region2_sample_count := region2_size / BYTES_PER_SAMPLE
-	for sample_index: win.DWORD; sample_index < region2_sample_count; sample_index += 1 {
-
-		sine_value: f32 = math.sin(sound_output.sine_t)
-		sound_output.sine_t = math.mod(
-			sound_output.sine_t + math.TAU / sound_output.wave_period,
-			math.TAU,
-		)
-
-		sample_value := cast(i16)(sine_value * sound_output.volume * math.F16_MAX)
-
-		left := sample_value
-		right := sample_value
-
-		sample_out^ = left
-		sample_out = mem.ptr_offset(sample_out, 1)
-
-		sample_out^ = right
-		sample_out = mem.ptr_offset(sample_out, 1)
-		sound_output.running_sample_index += 1
-	}
+	sound_output.running_sample_index += source_buffer.count
 
 	global_audio_buffer.Unlock(global_audio_buffer, region1, region1_size, region2, region2_size)
 }
@@ -427,25 +393,15 @@ main :: proc() {
 	res: win.LRESULT = 1
 	offset: [2]i32 = {0, 0}
 
-	freq: f32 = 256
 	sound_output: Sound_Output = {
 		sample_rate          = SAMPLE_RATE,
-		freq                 = freq,
-		wave_period          = f32(SAMPLE_RATE) / freq,
-		volume               = 0.4,
 		bytes_per_sample     = BYTES_PER_SAMPLE,
 		buffer_size          = audio_buffer_size,
 		running_sample_index = 0,
-		sine_t               = 0.0,
 		latency_samples      = SAMPLE_RATE / 15,
 	}
 
 
-	fill_sound_buffer(
-		&sound_output,
-		0,
-		sound_output.latency_samples * sound_output.bytes_per_sample,
-	)
 	global_audio_buffer.Play(global_audio_buffer, 0, 0, DSBPLAY_LOOPING)
 
 
@@ -493,9 +449,6 @@ main :: proc() {
 
 				offset.x += i32(pad.sThumbLX) / 2048
 				offset.y -= i32(pad.sThumbLY) / 2048
-
-				sound_output.freq = f32(512 + f32(pad.sThumbLY) / (math.pow_f32(2.0, 8.0)))
-				sound_output.wave_period = f32(SAMPLE_RATE) / f32(sound_output.freq)
 			} else {
 				// no controller :(
 			}
@@ -503,29 +456,17 @@ main :: proc() {
 
 		offset.xy += 1
 
-		game.render(
-			&{
-				memory = global_back_buffer.memory,
-				width = global_back_buffer.width,
-				height = global_back_buffer.height,
-				pitch = global_back_buffer.pitch,
-			},
-			offset,
-		)
 		dc := win.GetDC(window)
 
 		play_cursor: win.DWORD
 		write_cursor: win.DWORD
 		global_audio_buffer.GetCurrentPosition(global_audio_buffer, &play_cursor, &write_cursor)
 
-		target_cursor :=
-			(play_cursor + sound_output.latency_samples * sound_output.bytes_per_sample) %
-			sound_output.buffer_size
+		target_cursor := play_cursor + sound_output.latency_samples * sound_output.bytes_per_sample
+		target_cursor %= sound_output.buffer_size
 
-
-		byte_to_lock :=
-			(sound_output.running_sample_index * sound_output.bytes_per_sample) %
-			sound_output.buffer_size
+		byte_to_lock := sound_output.running_sample_index * sound_output.bytes_per_sample
+		byte_to_lock %= sound_output.buffer_size
 
 		bytes_to_write: u32 = 0
 
@@ -537,7 +478,25 @@ main :: proc() {
 		if byte_to_lock < target_cursor {
 			bytes_to_write = target_cursor - byte_to_lock
 		}
-		fill_sound_buffer(&sound_output, byte_to_lock, bytes_to_write)
+
+		game_video_buffer := game.Offscreen_Buffer {
+			memory = global_back_buffer.memory,
+			width  = global_back_buffer.width,
+			height = global_back_buffer.height,
+			pitch  = global_back_buffer.pitch,
+		}
+
+		audio_buf: [48000 * 2]i16 = {}
+
+		game_sound_buffer := game.Sound_Output_Buffer {
+			samples = audio_buf,
+			count   = bytes_to_write / sound_output.bytes_per_sample,
+			rate    = sound_output.sample_rate,
+		}
+
+		game.update_step(&game_video_buffer, &game_sound_buffer)
+
+		fill_sound_buffer(&sound_output, byte_to_lock, bytes_to_write, &game_sound_buffer)
 
 
 		dims := dimensions(window)
@@ -556,12 +515,12 @@ main :: proc() {
 		fps := u32(1000.0 / perf_ms)
 		last_counter = end_counter
 
-		fmt.printfln(
-			"MS: %f\tfps: %d\tMCycles: %d",
-			perf_ms,
-			fps,
-			cycle_count_elapsed / (1000 * 1000),
-		)
+		// fmt.printfln(
+		// 	"MS: %f\tfps: %d\tMCycles: %d",
+		// 	perf_ms,
+		// 	fps,
+		// 	cycle_count_elapsed / (1000 * 1000),
+		// )
 	}
 
 	os.exit(cast(int)msg.wParam)

@@ -1,1 +1,1 @@
-odin build src/windows -debug -out:build/handmade-odin.exe
+odin build src -debug -out:build/handmade-odin.exe

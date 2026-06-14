@@ -8,6 +8,8 @@ import "core:mem"
 import os "core:os"
 import win "core:sys/windows"
 
+import "../game"
+
 // I use `dims` to mean the dimensions of a thing
 // so dims.x is with and dims.y is height
 
@@ -240,24 +242,6 @@ offscreen_buffer_resize :: proc(buf: ^Offscreen_Buffer, dims: [2]i32) {
 			win.MEM_COMMIT | win.MEM_RESERVE,
 			win.PAGE_READWRITE,
 		))
-}
-
-render_gradient :: proc(buf: ^Offscreen_Buffer, offset: [2]i32) {
-	row := buf.memory
-
-	for y in 0 ..< buf.height {
-		pixel := cast([^]u32)row
-		for x in 0 ..< buf.width {
-			r := u8(x + offset.x)
-			g := u8(y + offset.y)
-			b := u8(0)
-
-			pixel[0] = u32(r) << 8 | u32(g) << 16 | u32(b) << 24
-
-			pixel = mem.ptr_offset(pixel, 1)
-		}
-		row = mem.ptr_offset(row, buf.pitch)
-	}
 }
 
 display_buffer :: proc(device_context: win.HDC, window_dims: [2]i32, buf: ^Offscreen_Buffer) {
@@ -519,7 +503,15 @@ main :: proc() {
 
 		offset.xy += 1
 
-		render_gradient(&global_back_buffer, offset)
+		game.render(
+			&{
+				memory = global_back_buffer.memory,
+				width = global_back_buffer.width,
+				height = global_back_buffer.height,
+				pitch = global_back_buffer.pitch,
+			},
+			offset,
+		)
 		dc := win.GetDC(window)
 
 		play_cursor: win.DWORD

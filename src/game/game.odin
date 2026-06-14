@@ -12,9 +12,9 @@ Offscreen_Buffer :: struct {
 }
 
 Sound_Output_Buffer :: struct {
-	samples: [48000 * 2]i16,
-	count:   u32,
-	rate:    u32,
+	samples:      ^i16,
+	sample_count: u32,
+	sample_rate:  u32,
 }
 
 sine_t: f32 = 0.0
@@ -22,9 +22,12 @@ sine_t: f32 = 0.0
 output_sound :: proc(buf: ^Sound_Output_Buffer) {
 	volume: f32 = 0.1
 	tone_hz: f32 = 440.0
-	wave_period: f32 = f32(buf.rate) / tone_hz
+	wave_period: f32 = f32(buf.sample_rate) / tone_hz
 
-	for sample_index: u32; sample_index < buf.count * 2; sample_index += 2 {
+	sample := cast(^i16)(buf.samples)
+
+	// for sample_index: u32; sample_index < buf.sample_count * 2; sample_index += 2 {
+	for i in 0 ..< buf.sample_count {
 		sine_value: f32 = math.sin(sine_t)
 		sine_t = math.mod(sine_t + math.TAU / wave_period, math.TAU)
 
@@ -33,8 +36,10 @@ output_sound :: proc(buf: ^Sound_Output_Buffer) {
 		left := sample_value
 		right := sample_value
 
-		buf.samples[sample_index] = left
-		buf.samples[sample_index + 1] = right
+		sample^ = left
+		sample = mem.ptr_offset(sample, 1)
+		sample^ = right
+		sample = mem.ptr_offset(sample, 1)
 	}
 }
 

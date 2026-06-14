@@ -371,10 +371,10 @@ fill_sound_buffer :: proc(
 		0,
 	)
 
-	mem.copy(region1, &source_buffer.samples[0], int(region1_size))
-	mem.copy(region2, &source_buffer.samples[region1_size / 2], int(region2_size))
+	mem.copy(region1, source_buffer.samples, int(region1_size))
+	mem.copy(region2, source_buffer.samples, int(region2_size))
 
-	sound_output.running_sample_index += source_buffer.count
+	sound_output.running_sample_index += source_buffer.sample_count
 
 	global_audio_buffer.Unlock(global_audio_buffer, region1, region1_size, region2, region2_size)
 }
@@ -404,6 +404,12 @@ main :: proc() {
 
 	global_audio_buffer.Play(global_audio_buffer, 0, 0, DSBPLAY_LOOPING)
 
+	audio_buf := cast(^i16)win.VirtualAlloc(
+		nil,
+		auto_cast sound_output.buffer_size,
+		win.MEM_COMMIT,
+		win.PAGE_READWRITE,
+	)
 
 	end_counter: win.LARGE_INTEGER
 	last_counter: win.LARGE_INTEGER
@@ -486,12 +492,10 @@ main :: proc() {
 			pitch  = global_back_buffer.pitch,
 		}
 
-		audio_buf: [48000 * 2]i16 = {}
-
 		game_sound_buffer := game.Sound_Output_Buffer {
-			samples = audio_buf,
-			count   = bytes_to_write / sound_output.bytes_per_sample,
-			rate    = sound_output.sample_rate,
+			samples      = audio_buf,
+			sample_count = bytes_to_write / sound_output.bytes_per_sample,
+			sample_rate  = sound_output.sample_rate,
 		}
 
 		game.update_step(&game_video_buffer, &game_sound_buffer)

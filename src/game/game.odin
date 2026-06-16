@@ -17,16 +17,46 @@ Sound_Output_Buffer :: struct {
 	sample_rate:  u32,
 }
 
+Input_Analog_Stick :: struct {
+	start: f32,
+	end:   f32,
+	min:   f32,
+	max:   f32,
+}
+
+Input_Button :: struct {
+	half_transition_count: i8,
+	ended_down:            bool,
+}
+
+Player_Input :: struct {
+	stick_x:   Input_Analog_Stick,
+	stick_y:   Input_Analog_Stick,
+	up:        Input_Button,
+	down:      Input_Button,
+	left:      Input_Button,
+	right:     Input_Button,
+	a:         Input_Button,
+	b:         Input_Button,
+	x:         Input_Button,
+	y:         Input_Button,
+	is_analog: bool,
+}
+
+MAX_CONTROLELRS :: 4
+
+Input :: struct {
+	controllers: [MAX_CONTROLELRS]Player_Input,
+}
+
 sine_t: f32 = 0.0
 
-output_sound :: proc(buf: ^Sound_Output_Buffer) {
+output_sound :: proc(buf: ^Sound_Output_Buffer, tone_hz: f32 = 440.0) {
 	volume: f32 = 0.1
-	tone_hz: f32 = 440.0
 	wave_period: f32 = f32(buf.sample_rate) / tone_hz
 
 	sample := cast(^i16)(buf.samples)
 
-	// for sample_index: u32; sample_index < buf.sample_count * 2; sample_index += 2 {
 	for i in 0 ..< buf.sample_count {
 		sine_value: f32 = math.sin(sine_t)
 		sine_t = math.mod(sine_t + math.TAU / wave_period, math.TAU)
@@ -61,7 +91,28 @@ render :: proc(buf: ^Offscreen_Buffer, offset: [2]i32) {
 	}
 }
 
-update_step :: proc(video_buffer: ^Offscreen_Buffer, Sound_Output_Buffer: ^Sound_Output_Buffer) {
-	render(video_buffer, [2]i32{0, 0})
-	output_sound(Sound_Output_Buffer)
+update_step :: proc(
+	input: ^Input,
+	video_buffer: ^Offscreen_Buffer,
+	Sound_Output_Buffer: ^Sound_Output_Buffer,
+) {
+	@(static) tone_hz: f32 = 440.07
+	@(static) offset: [2]i32 = {0, 0}
+
+	player_1_input := input.controllers[0]
+
+	if (player_1_input.is_analog) {
+		tone_hz = 440.0 + player_1_input.stick_y.end * 128.0
+		offset.x += cast(i32)(4.0 * player_1_input.stick_x.end)
+		offset.y += cast(i32)(4.0 * player_1_input.stick_y.end)
+	} else {
+		// no controller? :(
+	}
+
+	if (player_1_input.a.ended_down) {
+		offset.y += 1
+	}
+
+	render(video_buffer, offset)
+	output_sound(Sound_Output_Buffer, tone_hz)
 }

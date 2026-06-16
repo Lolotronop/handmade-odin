@@ -3,6 +3,7 @@ package handmade_odin
 import "base:intrinsics"
 import "base:runtime"
 import "core:fmt"
+import "core:math"
 import "core:mem"
 import os "core:os"
 import win "core:sys/windows"
@@ -420,7 +421,8 @@ main :: proc() {
 
 	last_cycle_count := intrinsics.read_cycle_counter()
 
-	// last_cycle_cout := intrin
+	old_input := game.Input{}
+
 	for res > 0 && global_running {
 		for win.PeekMessageA(&msg, nil, 0, 0, win.PM_REMOVE) {
 			if msg.message == win.WM_QUIT {
@@ -431,34 +433,71 @@ main :: proc() {
 			win.DispatchMessageW(&msg)
 		}
 
+		new_input := game.Input{}
+
+		max_controllers: u32 = math.min(game.MAX_CONTROLELRS, win.XUSER_MAX_COUNT)
 		for controller_index: win.DWORD;
-		    controller_index < win.XUSER_MAX_COUNT;
+		    controller_index < max_controllers;
 		    controller_index += 1 {
 			state: win.XINPUT_STATE
 			res := xinput_get_state(win.XUSER(controller_index), &state)
+
+			old := &old_input.controllers[controller_index]
+			new := &new_input.controllers[controller_index]
+
 			if (res == .SUCCESS) {
 				// controller is there
 				pad := state.Gamepad
-				if .A in pad.wButtons {
-					vib := win.XINPUT_VIBRATION {
-						wLeftMotorSpeed  = u16(6000),
-						wRightMotorSpeed = u16(6000),
-					}
-					xinput_set_state(win.XUSER(controller_index), &vib)
-				} else {
-					vib := win.XINPUT_VIBRATION {
-						wLeftMotorSpeed  = u16(0),
-						wRightMotorSpeed = u16(0),
-					}
-					xinput_set_state(win.XUSER(controller_index), &vib)
+
+				new.is_analog = true
+
+				process_button :: proc(
+					pad: ^win.XINPUT_GAMEPAD,
+					old_state: ^game.Input_Button,
+					button_bit: win.XINPUT_GAMEPAD_BUTTON_BIT,
+					new_state: ^game.Input_Button,
+				) {
+					new_state.ended_down = button_bit in pad.wButtons
+
+					did_change := old_state.ended_down != new_state.ended_down
+					new_state.half_transition_count = did_change ? 1 : 0
 				}
 
-				offset.x += i32(pad.sThumbLX) / 2048
-				offset.y -= i32(pad.sThumbLY) / 2048
+				normalize_stick :: proc(value: i16) -> f32 {
+					// xinput defines the range to be -32768 to 32767
+					// because of win.SHORT being 16-bit signed int
+					if value < 0 {
+						return f32(value) / f32(1 << 15)
+					} else {
+						return f32(value) / f32(1 << 15 - 1)
+					}
+				}
+
+				new.stick_x.end = normalize_stick(pad.sThumbLX)
+				new.stick_y.end = normalize_stick(pad.sThumbLY)
+
+				bits :: win.XINPUT_GAMEPAD_BUTTON_BIT
+
+				process_button(&pad, &old.a, bits.A, &new.a)
+				process_button(&pad, &old.b, bits.B, &new.b)
+				process_button(&pad, &old.x, bits.X, &new.x)
+				process_button(&pad, &old.y, bits.Y, &new.y)
+				process_button(&pad, &old.left, bits.DPAD_LEFT, &new.left)
+				process_button(&pad, &old.right, bits.DPAD_RIGHT, &new.right)
+				process_button(&pad, &old.up, bits.DPAD_UP, &new.up)
+				process_button(&pad, &old.down, bits.DPAD_DOWN, &new.down)
+
 			} else {
+				new.is_analog = false
 				// no controller :(
 			}
 		}
+
+		fmt.printfln(
+			"stick_x: %f\tstick_y: %f",
+			new_input.controllers[0].stick_x.end,
+			new_input.controllers[0].stick_y.end,
+		)
 
 		offset.xy += 1
 
@@ -498,7 +537,10 @@ main :: proc() {
 			sample_rate  = sound_output.sample_rate,
 		}
 
-		game.update_step(&game_video_buffer, &game_sound_buffer)
+
+		game.update_step(&new_input, &game_video_buffer, &game_sound_buffer)
+
+		old_input = new_input
 
 		fill_sound_buffer(&sound_output, byte_to_lock, bytes_to_write, &game_sound_buffer)
 

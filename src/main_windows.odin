@@ -6,6 +6,7 @@ import "core:fmt"
 import "core:math"
 import "core:mem"
 import os "core:os"
+import "core:slice"
 import win "core:sys/windows"
 
 import "./game"
@@ -169,10 +170,10 @@ dimensions_window :: proc(window: win.HWND) -> [2]i32 {
 
 Offscreen_Buffer :: struct {
 	info:            win.BITMAPINFO,
-	memory:          [^]u8,
+	memory:          []byte,
 	width:           i32,
 	height:          i32,
-	pitch:           i32,
+	pitch_bytes:     i32,
 	bytes_per_pixel: i32,
 }
 
@@ -227,12 +228,12 @@ create_window :: proc(instance: win.HINSTANCE) -> win.HWND {
 
 offscreen_buffer_resize :: proc(buf: ^Offscreen_Buffer, dims: [2]i32) {
 	if (buf.memory != nil) {
-		win.VirtualFree(buf.memory, 0, win.MEM_RELEASE)
+		win.VirtualFree(slice.first_ptr(buf.memory), 0, win.MEM_RELEASE)
 	}
 
 	buf.width = dims.x
 	buf.height = dims.y
-	buf.pitch = dims.x * buf.bytes_per_pixel
+	buf.pitch_bytes = dims.x * buf.bytes_per_pixel
 
 	buf.info.bmiHeader.biSize = size_of(win.BITMAPINFO)
 	buf.info.bmiHeader.biWidth = buf.width
@@ -244,12 +245,7 @@ offscreen_buffer_resize :: proc(buf: ^Offscreen_Buffer, dims: [2]i32) {
 	bitmap_size: uint = uint(buf.width * buf.height * buf.bytes_per_pixel)
 	pitch := buf.width * buf.bytes_per_pixel
 
-	buf.memory = cast([^]u8)(win.VirtualAlloc(
-			nil,
-			bitmap_size,
-			win.MEM_COMMIT | win.MEM_RESERVE,
-			win.PAGE_READWRITE,
-		))
+	buf.memory = win_alloc(bitmap_size)
 }
 
 display_buffer :: proc(device_context: win.HDC, window_dims: [2]i32, buf: ^Offscreen_Buffer) {
@@ -263,7 +259,7 @@ display_buffer :: proc(device_context: win.HDC, window_dims: [2]i32, buf: ^Offsc
 		0,
 		buf.width,
 		buf.height,
-		buf.memory,
+		slice.first_ptr(buf.memory),
 		&buf.info,
 		win.DIB_RGB_COLORS,
 		win.SRCCOPY,
@@ -372,12 +368,32 @@ fill_sound_buffer :: proc(
 		0,
 	)
 
-	mem.copy(region1, source_buffer.samples, int(region1_size))
-	mem.copy(region2, source_buffer.samples, int(region2_size))
+	sample_count := u32(len(source_buffer.samples))
 
-	sound_output.running_sample_index += source_buffer.sample_count
+	if (sample_count > 0) {
+		raw := slice.to_bytes(source_buffer.samples)
+		from1 := &raw[0]
+		mem.copy(region1, from1, int(region1_size))
+		if (region1_size < sample_count * sound_output.bytes_per_sample) {
+			from2 := &raw[region1_size]
+			mem.copy(region2, &raw[region1_size], int(region2_size))
+		}
+	}
+
+	sound_output.running_sample_index += sample_count
 
 	global_audio_buffer.Unlock(global_audio_buffer, region1, region1_size, region2, region2_size)
+}
+
+Kilabytes :: #force_inline proc(mb: u64) -> (bytes: u64) {return mb * 1024}
+Megabytes :: #force_inline proc(mb: u64) -> (bytes: u64) {return mb * 1024 * 1024}
+Gigabytes :: #force_inline proc(mb: u64) -> (bytes: u64) {return mb * 1024 * 1024 * 1024}
+
+win_alloc :: proc(#any_int size: uint) -> []byte {
+	return slice.bytes_from_ptr(
+		win.VirtualAlloc(nil, size, win.MEM_COMMIT | win.MEM_RESERVE, win.PAGE_READWRITE),
+		int(size),
+	)
 }
 
 main :: proc() {
@@ -405,12 +421,8 @@ main :: proc() {
 
 	global_audio_buffer.Play(global_audio_buffer, 0, 0, DSBPLAY_LOOPING)
 
-	audio_buf := cast(^i16)win.VirtualAlloc(
-		nil,
-		auto_cast sound_output.buffer_size,
-		win.MEM_COMMIT,
-		win.PAGE_READWRITE,
-	)
+	audio_buf := slice.reinterpret([]game.Sound_Sample, win_alloc(sound_output.buffer_size))
+
 
 	end_counter: win.LARGE_INTEGER
 	last_counter: win.LARGE_INTEGER
@@ -422,6 +434,11 @@ main :: proc() {
 	last_cycle_count := intrinsics.read_cycle_counter()
 
 	old_input := game.Input{}
+
+	game_memory := game.Memory{}
+	game_memory.permament = win_alloc(Megabytes(64))
+	game_memory.transient = win_alloc(Gigabytes(4))
+
 
 	for res > 0 && global_running {
 		for win.PeekMessageA(&msg, nil, 0, 0, win.PM_REMOVE) {
@@ -493,12 +510,6 @@ main :: proc() {
 			}
 		}
 
-		fmt.printfln(
-			"stick_x: %f\tstick_y: %f",
-			new_input.controllers[0].stick_x.end,
-			new_input.controllers[0].stick_y.end,
-		)
-
 		offset.xy += 1
 
 		dc := win.GetDC(window)
@@ -525,20 +536,21 @@ main :: proc() {
 		}
 
 		game_video_buffer := game.Offscreen_Buffer {
-			memory = global_back_buffer.memory,
-			width  = global_back_buffer.width,
-			height = global_back_buffer.height,
-			pitch  = global_back_buffer.pitch,
+			pixels       = slice.reinterpret([]game.Pixel, global_back_buffer.memory),
+			width        = global_back_buffer.width,
+			height       = global_back_buffer.height,
+			pitch_pixels = global_back_buffer.pitch_bytes / global_back_buffer.bytes_per_pixel,
 		}
 
+
+		sample_count := bytes_to_write / sound_output.bytes_per_sample
 		game_sound_buffer := game.Sound_Output_Buffer {
-			samples      = audio_buf,
-			sample_count = bytes_to_write / sound_output.bytes_per_sample,
-			sample_rate  = sound_output.sample_rate,
+			samples     = audio_buf[:sample_count],
+			sample_rate = sound_output.sample_rate,
 		}
 
 
-		game.update_step(&new_input, &game_video_buffer, &game_sound_buffer)
+		game.update_step(&game_memory, &new_input, &game_video_buffer, &game_sound_buffer)
 
 		old_input = new_input
 

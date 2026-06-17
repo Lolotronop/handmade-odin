@@ -1,3 +1,5 @@
+vim.notify("Loaded nvim.lua")
+
 vim.keymap.set('n', '<leader>c', function()
     vim.system({ "D:/soft/raddbg/raddbg.exe", "--ipc", "kill_all" }, nil, function()
         vim.notify("Killed")

@@ -3,6 +3,6 @@
 target:
 {
   executable: "build/handmade-odin.exe"
-  working_directory: ""
+  working_directory: build
   enabled: 1
 }

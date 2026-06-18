@@ -3,6 +3,7 @@ package handmade_odin
 import "base:intrinsics"
 import "base:runtime"
 import "core:fmt"
+import "core:math"
 import "core:mem"
 import os "core:os"
 import "core:slice"
@@ -367,15 +368,21 @@ win_alloc :: proc(#any_int size: uint) -> []byte {
 	)
 }
 
+global_perf_freq: win.LARGE_INTEGER = 0
+
 main :: proc() {
 	instance, lpCmdLine, startup_info := kinda_winmain()
 	_ = lpCmdLine
 	_ = startup_info
 
+	assert(win.timeBeginPeriod(1) == win.TIMERR_NOERROR) // 1ms timer resolution
+	win.QueryPerformanceFrequency(&global_perf_freq)
+
 	window := create_window(instance)
 	xinput_load()
 	audio_buffer_size: u32 = SAMPLE_RATE * BYTES_PER_SAMPLE
 	dsound_init(window, SAMPLE_RATE, audio_buffer_size)
+
 
 	offscreen_buffer_resize(&global_back_buffer, {1280, 720})
 
@@ -397,16 +404,6 @@ main :: proc() {
 
 	audio_buf := slice.reinterpret([]game.Sound_Sample, win_alloc(sound_output.buffer_size))
 
-
-	end_counter: win.LARGE_INTEGER
-	last_counter: win.LARGE_INTEGER
-	win.QueryPerformanceCounter(&last_counter)
-
-	perf_frequency: win.LARGE_INTEGER
-	win.QueryPerformanceFrequency(&perf_frequency)
-
-	last_cycle_count := intrinsics.read_cycle_counter()
-
 	old_input := game.Input{}
 
 	game_memory := game.Memory{}
@@ -414,6 +411,12 @@ main :: proc() {
 	game_memory.transient = win_alloc(Gigabytes(4))
 
 
+	monitor_refresh_rate := 60
+	game_update_rate := monitor_refresh_rate / 2
+	target_ms_per_frame: f32 = 1000 / f32(game_update_rate)
+
+	end_counter: win.LARGE_INTEGER
+	last_counter := get_wall_clock()
 	for res > 0 && global_running {
 		new_input := game.Input{}
 
@@ -577,8 +580,6 @@ main :: proc() {
 
 		offset.xy += 1
 
-		dc := win.GetDC(window)
-
 		play_cursor: win.DWORD
 		write_cursor: win.DWORD
 		global_audio_buffer.GetCurrentPosition(global_audio_buffer, &play_cursor, &write_cursor)
@@ -617,30 +618,50 @@ main :: proc() {
 
 		game.update_step(&game_memory, &new_input, &game_video_buffer, &game_sound_buffer)
 
-		old_input = new_input
+		end_counter = get_wall_clock()
+		perf_ms := elapsed_ms(last_counter, end_counter)
+
+		if perf_ms < target_ms_per_frame {
+			sleep_ms := u32(math.floor(target_ms_per_frame - perf_ms))
+			if sleep_ms > 0 {win.Sleep(min(sleep_ms, 0))}
+			perf_ms = elapsed_ms(last_counter, get_wall_clock())
+			for perf_ms < target_ms_per_frame {
+				perf_ms = elapsed_ms(last_counter, get_wall_clock())
+			}
+		} else {
+			fmt.printfln("Warning: frame took %.2fms", perf_ms)
+		}
 
 		fill_sound_buffer(&sound_output, byte_to_lock, bytes_to_write, &game_sound_buffer)
+		{
+			dc := win.GetDC(window)
+			defer win.ReleaseDC(window, dc)
 
+			dims := dimensions(window)
+			display_buffer(dc, dims, &global_back_buffer)
+		}
 
-		dims := dimensions(window)
-		display_buffer(dc, dims, &global_back_buffer)
-		win.ReleaseDC(window, dc)
+		old_input = new_input
 
-
-		end_cycle_count := intrinsics.read_cycle_counter()
-		cycle_count_elapsed := end_cycle_count - last_cycle_count
-		last_cycle_count = end_cycle_count
-
-		win.QueryPerformanceCounter(&end_counter)
-		counter_elapsed := end_counter - last_counter
-		perf_seconds := f64(counter_elapsed) / f64(perf_frequency)
-		perf_ms := perf_seconds * 1000.0
-		fps := u32(1000.0 / perf_ms)
+		end_counter = get_wall_clock()
 		last_counter = end_counter
-
-		_ = cycle_count_elapsed
-		_ = fps
 	}
 
 	os.exit(cast(int)msg.wParam)
+}
+
+minmax :: #force_inline proc(a, b: $T) -> (T, T) {
+	if a < b {return a, b} else {return b, a}
+}
+
+elapsed_ms :: #force_inline proc(start: win.LARGE_INTEGER, end: win.LARGE_INTEGER) -> f32 {
+	// TODO: do I need this?
+	a, b := minmax(start, end)
+	return f32(b - a) / f32(global_perf_freq) * 1000.0
+}
+
+get_wall_clock :: #force_inline proc() -> win.LARGE_INTEGER {
+	counter: win.LARGE_INTEGER
+	win.QueryPerformanceCounter(&counter)
+	return counter
 }

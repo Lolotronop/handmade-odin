@@ -33,8 +33,16 @@ local function odin_errors_to_quickfix(text)
         items = items,
     })
 
+
+
     if #items > 0 then
+        local current_win = vim.api.nvim_get_current_win()
+
         vim.cmd("copen")
+
+        if vim.api.nvim_win_is_valid(current_win) then
+            vim.api.nvim_set_current_win(current_win)
+        end
         vim.notify(
             string.format("Added %d Odin error(s) to quickfix", #items),
             vim.log.levels.INFO

@@ -1,5 +1,6 @@
 vim.notify("Loaded nvim.lua")
 
+local quickfix_title = "Odin compiler errors"
 local function odin_errors_to_quickfix(text)
     local items = {}
 
@@ -29,7 +30,7 @@ local function odin_errors_to_quickfix(text)
     end
 
     vim.fn.setqflist({}, "r", {
-        title = "Odin compiler errors",
+        title = quickfix_title,
         items = items,
     })
 
@@ -62,6 +63,14 @@ vim.keymap.set('n', '<leader>c', function()
                     odin_errors_to_quickfix(obj.stderr)
                 end)
                 return
+            else
+                vim.schedule(function()
+                    local qf = vim.fn.getqflist({ title = 1 })
+                    if qf.title == quickfix_title then
+                        vim.fn.setqflist({}, "r")
+                        vim.cmd("cclose")
+                    end
+                end)
             end
             local elapsed = vim.loop.hrtime() - time
 

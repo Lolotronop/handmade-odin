@@ -95,6 +95,7 @@ Sound_Sample :: struct {
 }
 
 Sound_Output_Buffer :: struct {
+	// len == how many samples does the game needs to fill
 	samples:     []Sound_Sample,
 	sample_rate: u32,
 }

@@ -189,8 +189,10 @@ kinda_winmain :: proc() -> (win.HINSTANCE, win.LPCWSTR, win.STARTUPINFOW) {
 
 	startup_info: win.STARTUPINFOW
 	win.GetStartupInfoW(&startup_info)
+	// TDOO: figure out what this even is
 	nCmdShow :=
 		(startup_info.dwFlags & win.STARTF_USESHOWWINDOW) != 0 ? cast(win.c_int)startup_info.wShowWindow : win.SW_SHOWDEFAULT
+	_ = nCmdShow
 
 	return instance, lpCmdLine, startup_info
 }
@@ -243,7 +245,6 @@ offscreen_buffer_resize :: proc(buf: ^Offscreen_Buffer, dims: [2]i32) {
 	buf.info.bmiHeader.biCompression = win.BI_RGB
 
 	bitmap_size: uint = uint(buf.width * buf.height * buf.bytes_per_pixel)
-	pitch := buf.width * buf.bytes_per_pixel
 
 	buf.memory = win_alloc(bitmap_size)
 }
@@ -284,37 +285,8 @@ win_proc :: proc "stdcall" (
 	case win.WM_KEYDOWN:
 		fallthrough
 	case win.WM_KEYUP:
-		has_bit :: #force_inline proc(mask: u32, bit: u32) -> bool {
-			when ODIN_DEBUG {assert(bit < 32)}
-			return (mask & (1 << bit)) != 0
-		}
-
-		IS_UP_BIT :: 31
-		WAS_DOWN_BIT :: 30
-		ALT_DOWN_BIT :: 29
-
-		keycode := wparam
-		key_parameters := u32(lparam)
-
-		was_down: bool = has_bit(key_parameters, WAS_DOWN_BIT)
-		is_down: bool = !has_bit(key_parameters, IS_UP_BIT)
-		alt_down: bool = has_bit(key_parameters, ALT_DOWN_BIT)
-
-		if (was_down != is_down) { 	// filter repeats
-			if (alt_down && keycode == win.VK_F4) {
-				global_running = false
-			}
-
-			if (keycode == 'W') {
-				fmt.println("W")
-			} else if (keycode == 'A') {
-				fmt.println("A")
-			} else if (keycode == 'S') {
-				fmt.println("S")
-			} else if (keycode == 'D') {
-				fmt.println("D")
-			}
-		}
+		// TODO: figure out if this is safe to ignore
+		assert(false, "A keyboard message in the callback happened")
 
 	case win.WM_DESTROY:
 		fallthrough
@@ -325,6 +297,7 @@ win_proc :: proc "stdcall" (
 		ctx := win.BeginPaint(window, &paint)
 
 		dirty_dims := dimensions(paint.rcPaint)
+		_ = dirty_dims
 
 		dims := dimensions(window)
 		display_buffer(ctx, dims, &global_back_buffer)
@@ -375,7 +348,6 @@ fill_sound_buffer :: proc(
 		from1 := &raw[0]
 		mem.copy(region1, from1, int(region1_size))
 		if (region1_size < sample_count * sound_output.bytes_per_sample) {
-			from2 := &raw[region1_size]
 			mem.copy(region2, &raw[region1_size], int(region2_size))
 		}
 	}
@@ -398,6 +370,9 @@ win_alloc :: proc(#any_int size: uint) -> []byte {
 
 main :: proc() {
 	instance, lpCmdLine, startup_info := kinda_winmain()
+	_ = lpCmdLine
+	_ = startup_info
+
 	window := create_window(instance)
 	xinput_load()
 	audio_buffer_size: u32 = SAMPLE_RATE * BYTES_PER_SAMPLE
@@ -441,16 +416,71 @@ main :: proc() {
 
 
 	for res > 0 && global_running {
+		new_input := game.Input{}
+
 		for win.PeekMessageA(&msg, nil, 0, 0, win.PM_REMOVE) {
 			if msg.message == win.WM_QUIT {
 				global_running = false
 			}
 
-			win.TranslateMessage(&msg)
-			win.DispatchMessageW(&msg)
-		}
+			switch msg.message {
+			case win.WM_QUIT:
+				global_running = false
 
-		new_input := game.Input{}
+			case win.WM_SYSKEYDOWN:
+				fallthrough
+			case win.WM_SYSKEYUP:
+				fallthrough
+			case win.WM_KEYDOWN:
+				fallthrough
+			case win.WM_KEYUP:
+				has_bit :: #force_inline proc(mask: u32, bit: u32) -> bool {
+					when ODIN_DEBUG {assert(bit < 32)}
+					return (mask & (1 << bit)) != 0
+				}
+
+				process_keyboard :: proc(new_state: ^game.Input_Button, is_down: bool) {
+					new_state.ended_down = is_down
+					new_state.half_transition_count += 1
+				}
+
+				IS_UP_BIT :: 31
+				WAS_DOWN_BIT :: 30
+				ALT_DOWN_BIT :: 29
+
+				keycode := msg.wParam
+				key_parameters := u32(msg.lParam)
+
+				was_down: bool = has_bit(key_parameters, WAS_DOWN_BIT)
+				_ = was_down
+				is_down: bool = !has_bit(key_parameters, IS_UP_BIT)
+				alt_down: bool = has_bit(key_parameters, ALT_DOWN_BIT)
+
+				if (alt_down && keycode == win.VK_F4) {
+					global_running = false
+				}
+
+				new := &new_input.controllers[0]
+
+				if (keycode == 'W') {
+					process_keyboard(&new.up, is_down)
+				} else if (keycode == 'A') {
+					process_keyboard(&new.left, is_down)
+				} else if (keycode == 'S') {
+					process_keyboard(&new.down, is_down)
+				} else if (keycode == 'D') {
+					process_keyboard(&new.right, is_down)
+				} else if (keycode == 'E') {
+					process_keyboard(&new.a, is_down)
+				} else if (keycode == 'Q') {
+					process_keyboard(&new.b, is_down)
+				}
+			case:
+				win.TranslateMessage(&msg)
+				win.DispatchMessageW(&msg)
+			}
+
+		}
 
 		max_controllers: u32 = math.min(game.MAX_CONTROLELRS, win.XUSER_MAX_COUNT)
 		for controller_index: win.DWORD;
@@ -572,6 +602,9 @@ main :: proc() {
 		perf_ms := perf_seconds * 1000.0
 		fps := u32(1000.0 / perf_ms)
 		last_counter = end_counter
+
+		_ = cycle_count_elapsed
+		_ = fps
 
 		// fmt.printfln(
 		// 	"MS: %f\tfps: %d\tMCycles: %d",

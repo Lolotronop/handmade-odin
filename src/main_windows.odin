@@ -3,7 +3,6 @@ package handmade_odin
 import "base:intrinsics"
 import "base:runtime"
 import "core:fmt"
-import "core:math"
 import "core:mem"
 import os "core:os"
 import "core:slice"
@@ -357,9 +356,9 @@ fill_sound_buffer :: proc(
 	global_audio_buffer.Unlock(global_audio_buffer, region1, region1_size, region2, region2_size)
 }
 
-Kilabytes :: #force_inline proc(mb: u64) -> (bytes: u64) {return mb * 1024}
-Megabytes :: #force_inline proc(mb: u64) -> (bytes: u64) {return mb * 1024 * 1024}
-Gigabytes :: #force_inline proc(mb: u64) -> (bytes: u64) {return mb * 1024 * 1024 * 1024}
+Kilabytes :: #force_inline proc($mb: u64) -> (bytes: u64) {return mb * 1024}
+Megabytes :: #force_inline proc($mb: u64) -> (bytes: u64) {return mb * 1024 * 1024}
+Gigabytes :: #force_inline proc($mb: u64) -> (bytes: u64) {return mb * 1024 * 1024 * 1024}
 
 win_alloc :: proc(#any_int size: uint) -> []byte {
 	return slice.bytes_from_ptr(
@@ -418,6 +417,14 @@ main :: proc() {
 	for res > 0 && global_running {
 		new_input := game.Input{}
 
+		old_keyboard_controller := &old_input.controllers[0]
+		new_keyboard_controller := &new_input.controllers[0]
+		for i in 0 ..< len(new_keyboard_controller.buttons) {
+			new_keyboard_controller.buttons[i].ended_down =
+				old_keyboard_controller.buttons[i].ended_down
+		}
+		new_keyboard_controller.is_connected = true
+
 		for win.PeekMessageA(&msg, nil, 0, 0, win.PM_REMOVE) {
 			if msg.message == win.WM_QUIT {
 				global_running = false
@@ -440,6 +447,7 @@ main :: proc() {
 				}
 
 				process_keyboard :: proc(new_state: ^game.Input_Button, is_down: bool) {
+					assert(new_state.ended_down != is_down)
 					new_state.ended_down = is_down
 					new_state.half_transition_count += 1
 				}
@@ -460,20 +468,15 @@ main :: proc() {
 					global_running = false
 				}
 
-				new := &new_input.controllers[0]
+				if (was_down != is_down) {
+					new := &new_input.controllers[0]
 
-				if (keycode == 'W') {
-					process_keyboard(&new.up, is_down)
-				} else if (keycode == 'A') {
-					process_keyboard(&new.left, is_down)
-				} else if (keycode == 'S') {
-					process_keyboard(&new.down, is_down)
-				} else if (keycode == 'D') {
-					process_keyboard(&new.right, is_down)
-				} else if (keycode == 'E') {
-					process_keyboard(&new.a, is_down)
-				} else if (keycode == 'Q') {
-					process_keyboard(&new.b, is_down)
+					if (keycode == 'W') {process_keyboard(&new.move_up, is_down)}
+					if (keycode == 'A') {process_keyboard(&new.move_left, is_down)}
+					if (keycode == 'S') {process_keyboard(&new.move_down, is_down)}
+					if (keycode == 'D') {process_keyboard(&new.move_right, is_down)}
+					if (keycode == 'E') {process_keyboard(&new.a, is_down)}
+					if (keycode == 'Q') {process_keyboard(&new.b, is_down)}
 				}
 			case:
 				win.TranslateMessage(&msg)
@@ -482,61 +485,93 @@ main :: proc() {
 
 		}
 
-		max_controllers: u32 = math.min(game.MAX_CONTROLELRS, win.XUSER_MAX_COUNT)
+		max_controllers: u32 = min(game.MAX_CONTROLELRS, win.XUSER_MAX_COUNT)
 		for controller_index: win.DWORD;
 		    controller_index < max_controllers;
 		    controller_index += 1 {
+			our_controller_index := controller_index + 1
 			state: win.XINPUT_STATE
 			res := xinput_get_state(win.XUSER(controller_index), &state)
 
-			old := &old_input.controllers[controller_index]
-			new := &new_input.controllers[controller_index]
+			old := &old_input.controllers[our_controller_index]
+			new := &new_input.controllers[our_controller_index]
 
-			if (res == .SUCCESS) {
-				// controller is there
-				pad := state.Gamepad
-
-				new.is_analog = true
-
-				process_button :: proc(
-					pad: ^win.XINPUT_GAMEPAD,
-					old_state: ^game.Input_Button,
-					button_bit: win.XINPUT_GAMEPAD_BUTTON_BIT,
-					new_state: ^game.Input_Button,
-				) {
-					new_state.ended_down = button_bit in pad.wButtons
-
-					did_change := old_state.ended_down != new_state.ended_down
-					new_state.half_transition_count = did_change ? 1 : 0
-				}
-
-				normalize_stick :: proc(value: i16) -> f32 {
-					// xinput defines the range to be -32768 to 32767
-					// because of win.SHORT being 16-bit signed int
-					if value < 0 {
-						return f32(value) / f32(1 << 15)
-					} else {
-						return f32(value) / f32(1 << 15 - 1)
-					}
-				}
-
-				new.stick_x.end = normalize_stick(pad.sThumbLX)
-				new.stick_y.end = normalize_stick(pad.sThumbLY)
-
-				bits :: win.XINPUT_GAMEPAD_BUTTON_BIT
-
-				process_button(&pad, &old.a, bits.A, &new.a)
-				process_button(&pad, &old.b, bits.B, &new.b)
-				process_button(&pad, &old.x, bits.X, &new.x)
-				process_button(&pad, &old.y, bits.Y, &new.y)
-				process_button(&pad, &old.left, bits.DPAD_LEFT, &new.left)
-				process_button(&pad, &old.right, bits.DPAD_RIGHT, &new.right)
-				process_button(&pad, &old.up, bits.DPAD_UP, &new.up)
-				process_button(&pad, &old.down, bits.DPAD_DOWN, &new.down)
-
-			} else {
+			if res != .SUCCESS {
 				new.is_analog = false
-				// no controller :(
+				new.is_connected = false
+				continue
+			}
+
+			pad := state.Gamepad
+			new.is_connected = true
+
+
+			left_daedzone :: win.XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE
+			new.stick_x = normalize_stick(pad.sThumbLX, left_daedzone)
+			new.stick_y = normalize_stick(pad.sThumbLY, left_daedzone)
+
+			if new.stick_x != 0 || new.stick_y != 0 {
+				new.is_analog = true
+			}
+
+			threshhold :: 0.5
+			process_button(&pad, &old.move_right, new.stick_x > threshhold, &new.move_right)
+			process_button(&pad, &old.move_left, new.stick_x < -threshhold, &new.move_left)
+			process_button(&pad, &old.move_up, new.stick_y > threshhold, &new.move_up)
+			process_button(&pad, &old.move_down, new.stick_y < -threshhold, &new.move_down)
+
+
+			bits :: win.XINPUT_GAMEPAD_BUTTON_BIT
+			// TODO: make this into a table of (bit, offset_of(old.a)) etc?
+			process_button_bit(&pad, &old.a, bits.A, &new.a)
+			process_button_bit(&pad, &old.b, bits.B, &new.b)
+			process_button_bit(&pad, &old.x, bits.X, &new.x)
+			process_button_bit(&pad, &old.y, bits.Y, &new.y)
+
+			process_button_bit(&pad, &old.move_left, bits.DPAD_LEFT, &new.move_left)
+			process_button_bit(&pad, &old.move_right, bits.DPAD_RIGHT, &new.move_right)
+			process_button_bit(&pad, &old.move_up, bits.DPAD_UP, &new.move_up)
+			process_button_bit(&pad, &old.move_down, bits.DPAD_DOWN, &new.move_down)
+
+			process_button_bit(&pad, &old.back, bits.BACK, &new.back)
+			process_button_bit(&pad, &old.start, bits.START, &new.start)
+
+			if new.move_up.ended_down {new.stick_y = 1.0}
+			if new.move_down.ended_down {new.stick_y = -1.0}
+			if new.move_left.ended_down {new.stick_x = -1.0}
+			if new.move_right.ended_down {new.stick_x = 1.0}
+
+
+			process_button_bit :: proc(
+				pad: ^win.XINPUT_GAMEPAD,
+				old_state: ^game.Input_Button,
+				button_bit: win.XINPUT_GAMEPAD_BUTTON_BIT,
+				new_state: ^game.Input_Button,
+			) {
+				process_button(pad, old_state, button_bit in pad.wButtons, new_state)
+			}
+
+			process_button :: proc(
+				pad: ^win.XINPUT_GAMEPAD,
+				old_state: ^game.Input_Button,
+				is_down: bool,
+				new_state: ^game.Input_Button,
+			) {
+				new_state.ended_down = is_down
+
+				did_change := old_state.ended_down != new_state.ended_down
+				new_state.half_transition_count = did_change ? 1 : 0
+			}
+
+			normalize_stick :: proc(value: i16, deadzone: i16) -> f32 {
+				// xinput defines the range to be -32768 to 32767
+				// because of win.SHORT being 16-bit signed int
+				if value < 0 && value < -deadzone {
+					return f32(value) / f32(1 << 15)
+				} else if value > 0 && value > deadzone {
+					return f32(value) / f32(1 << 15 - 1)
+				}
+				return 0.0
 			}
 		}
 
@@ -605,13 +640,6 @@ main :: proc() {
 
 		_ = cycle_count_elapsed
 		_ = fps
-
-		// fmt.printfln(
-		// 	"MS: %f\tfps: %d\tMCycles: %d",
-		// 	perf_ms,
-		// 	fps,
-		// 	cycle_count_elapsed / (1000 * 1000),
-		// )
 	}
 
 	os.exit(cast(int)msg.wParam)

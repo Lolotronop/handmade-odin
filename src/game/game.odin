@@ -37,18 +37,36 @@ update_step :: proc(
 		state.offset.y = 0
 	}
 
-	player_1_input := input.controllers[0]
+	for controller in input.controllers {
+		if controller.is_connected == false {
+			continue
+		}
 
-	if (player_1_input.is_analog) {
-		state.tone_hz = 440.0 + player_1_input.stick_y.end * 128.0
-		state.offset.x += cast(i32)(4.0 * player_1_input.stick_x.end)
-		state.offset.y += cast(i32)(4.0 * player_1_input.stick_y.end)
-	} else {
-		// no controller? :(
-	}
+		if controller.is_analog {
+			if controller.stick_y != 0 {
+				state.tone_hz = 440.0 + controller.stick_y * 128.0
+			}
+			state.offset.x += cast(i32)(4.0 * controller.stick_x)
+			state.offset.y += cast(i32)(4.0 * controller.stick_y)
+		} else {
+			move: [2]i32 = {0, 0}
 
-	if (player_1_input.a.ended_down) {
-		state.offset.y += 1
+			move.x += controller.move_right.ended_down ? 1 : 0
+			move.x -= controller.move_left.ended_down ? 1 : 0
+			move.y -= controller.move_down.ended_down ? 1 : 0
+			move.y += controller.move_up.ended_down ? 1 : 0
+
+			state.offset.x += move.x * 4
+			state.offset.y += move.y * 4
+
+			if (move.x != 0 || move.y != 0) {
+				state.tone_hz = 440.0 + f32(move.y * 128)
+			}
+		}
+
+		if (controller.a.ended_down) {
+			state.offset.y += 1
+		}
 	}
 
 	render(video_buffer, state.offset)
@@ -121,33 +139,42 @@ output_sound :: proc(buf: ^Sound_Output_Buffer, tone_hz: f32 = 440.0) {
 // ==========================
 // ========= INPUT ==========
 // ==========================
-Input_Analog_Stick :: struct {
-	start: f32,
-	end:   f32,
-	min:   f32,
-	max:   f32,
-}
-
 Input_Button :: struct {
 	half_transition_count: i8,
 	ended_down:            bool,
 }
 
-Player_Input :: struct {
-	stick_x:   Input_Analog_Stick,
-	stick_y:   Input_Analog_Stick,
-	up:        Input_Button,
-	down:      Input_Button,
-	left:      Input_Button,
-	right:     Input_Button,
-	a:         Input_Button,
-	b:         Input_Button,
-	x:         Input_Button,
-	y:         Input_Button,
-	is_analog: bool,
+Button_Fields :: struct {
+	move_up:      Input_Button,
+	move_down:    Input_Button,
+	move_left:    Input_Button,
+	move_right:   Input_Button,
+	action_up:    Input_Button,
+	action_down:  Input_Button,
+	action_left:  Input_Button,
+	action_right: Input_Button,
+	a:            Input_Button,
+	b:            Input_Button,
+	x:            Input_Button,
+	y:            Input_Button,
+	back:         Input_Button,
+	start:        Input_Button,
 }
 
-MAX_CONTROLELRS :: 4
+Button_Storage :: struct #raw_union {
+	buttons: [size_of(Button_Fields)]Input_Button,
+	using _: Button_Fields,
+}
+
+Player_Input :: struct {
+	stick_x:      f32,
+	stick_y:      f32,
+	using _:      Button_Storage,
+	is_analog:    bool,
+	is_connected: bool,
+}
+
+MAX_CONTROLELRS :: 5
 
 Input :: struct {
 	controllers: [MAX_CONTROLELRS]Player_Input,

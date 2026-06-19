@@ -378,31 +378,37 @@ main :: proc() {
 	assert(win.timeBeginPeriod(1) == win.TIMERR_NOERROR) // 1ms timer resolution
 	win.QueryPerformanceFrequency(&global_perf_freq)
 
-	window := create_window(instance)
-	xinput_load()
-	audio_buffer_size: u32 = SAMPLE_RATE * BYTES_PER_SAMPLE
-	dsound_init(window, SAMPLE_RATE, audio_buffer_size)
+	monitor_refresh_rate :: 60
+	target_fps :: monitor_refresh_rate / 2
+	target_ms_per_frame: f32 : 1000 / f32(target_fps)
 
-
-	offscreen_buffer_resize(&global_back_buffer, {1280, 720})
 
 	global_running = true
 	msg: win.MSG
 	res: win.LRESULT = 1
-	offset: [2]i32 = {0, 0}
 
+
+	window := create_window(instance)
+	xinput_load()
+	audio_buffer_size: u32 = SAMPLE_RATE * BYTES_PER_SAMPLE
+	dsound_init(window, SAMPLE_RATE, audio_buffer_size)
+	offscreen_buffer_resize(&global_back_buffer, {1280, 720})
+
+	audio_latency_frames :: 3
 	sound_output: Sound_Output = {
 		sample_rate          = SAMPLE_RATE,
 		bytes_per_sample     = BYTES_PER_SAMPLE,
 		buffer_size          = audio_buffer_size,
 		running_sample_index = 0,
-		latency_samples      = SAMPLE_RATE / 15,
+		latency_samples      = audio_latency_frames * SAMPLE_RATE / u32(target_fps),
 	}
-
+	audio_buf := slice.reinterpret([]game.Sound_Sample, win_alloc(sound_output.buffer_size))
+	sound_is_valid := false
+	last_play_cursor: u32 = 0
+	write_cursor: win.DWORD
 
 	global_audio_buffer.Play(global_audio_buffer, 0, 0, DSBPLAY_LOOPING)
 
-	audio_buf := slice.reinterpret([]game.Sound_Sample, win_alloc(sound_output.buffer_size))
 
 	old_input := game.Input{}
 
@@ -411,13 +417,12 @@ main :: proc() {
 	game_memory.transient = win_alloc(Gigabytes(4))
 
 
-	monitor_refresh_rate := 60
-	game_update_rate := monitor_refresh_rate / 2
-	target_ms_per_frame: f32 = 1000 / f32(game_update_rate)
-
 	end_counter: win.LARGE_INTEGER
 	last_counter := get_wall_clock()
 	for res > 0 && global_running {
+		// =============================
+		// ========= READ INPUT ========
+		// =============================
 		new_input := game.Input{}
 
 		old_keyboard_controller := &old_input.controllers[0]
@@ -578,27 +583,56 @@ main :: proc() {
 			}
 		}
 
-		offset.xy += 1
 
-		play_cursor: win.DWORD
-		write_cursor: win.DWORD
-		global_audio_buffer.GetCurrentPosition(global_audio_buffer, &play_cursor, &write_cursor)
-
-		target_cursor := play_cursor + sound_output.latency_samples * sound_output.bytes_per_sample
-		target_cursor %= sound_output.buffer_size
-
-		byte_to_lock := sound_output.running_sample_index * sound_output.bytes_per_sample
-		byte_to_lock %= sound_output.buffer_size
-
+		// ========================================
+		// ========= DETERMINE SOUND THINGS =======
+		// ========================================
+		sample_count: u32 = 0
 		bytes_to_write: u32 = 0
+		byte_to_lock: u32 = 0
+		if sound_is_valid {
+			target_cursor :=
+				(last_play_cursor + sound_output.latency_samples * sound_output.bytes_per_sample) %
+				sound_output.buffer_size
 
-		// [??????P--------Bwwwwwwwwwww]
-		if byte_to_lock > target_cursor {
-			bytes_to_write = sound_output.buffer_size - byte_to_lock
+			byte_to_lock = sound_output.running_sample_index * sound_output.bytes_per_sample
+			byte_to_lock %= sound_output.buffer_size
+
+			temp_play_cursor: win.DWORD
+			global_audio_buffer.GetCurrentPosition(global_audio_buffer, &temp_play_cursor, nil)
+			fmt.printfln(
+				"play: %d\t lock: %d\t diff: %d",
+				temp_play_cursor,
+				byte_to_lock,
+				i64(byte_to_lock) - i64(temp_play_cursor),
+			)
+
+
+			// [??????P--------Bwwwwwwwwwww]
+			if byte_to_lock > target_cursor {
+				bytes_to_write = sound_output.buffer_size - byte_to_lock
+				bytes_to_write += target_cursor
+			}
+
+			// // [---BwwwwwwwwP--------------]
+			if byte_to_lock < target_cursor {
+				bytes_to_write = target_cursor - byte_to_lock
+			}
+
+
+			bytes_to_write = SAMPLE_RATE * BYTES_PER_SAMPLE / u32(target_fps)
+
+			sample_count = bytes_to_write / sound_output.bytes_per_sample
 		}
-		// [---BwwwwwwwwP--------------]
-		if byte_to_lock < target_cursor {
-			bytes_to_write = target_cursor - byte_to_lock
+
+
+		// ========================================
+		// ========= PREPARE THE FRAME ============
+		// ========================================
+
+		game_sound_buffer := game.Sound_Output_Buffer {
+			samples     = audio_buf[:sample_count],
+			sample_rate = sound_output.sample_rate,
 		}
 
 		game_video_buffer := game.Offscreen_Buffer {
@@ -608,19 +642,13 @@ main :: proc() {
 			pitch_pixels = global_back_buffer.pitch_bytes / global_back_buffer.bytes_per_pixel,
 		}
 
-
-		sample_count := bytes_to_write / sound_output.bytes_per_sample
-		game_sound_buffer := game.Sound_Output_Buffer {
-			samples     = audio_buf[:sample_count],
-			sample_rate = sound_output.sample_rate,
-		}
-
-
 		game.update_step(&game_memory, &new_input, &game_video_buffer, &game_sound_buffer)
 
+		// ========================================
+		// ========= WAIT FOR NEXT FRAME ==========
+		// ========================================
 		end_counter = get_wall_clock()
 		perf_ms := elapsed_ms(last_counter, end_counter)
-
 		if perf_ms < target_ms_per_frame {
 			sleep_ms := u32(math.floor(target_ms_per_frame - perf_ms))
 			if sleep_ms > 0 {win.Sleep(min(sleep_ms, 0))}
@@ -629,10 +657,90 @@ main :: proc() {
 				perf_ms = elapsed_ms(last_counter, get_wall_clock())
 			}
 		} else {
+			sound_is_valid = false
 			fmt.printfln("Warning: frame took %.2fms", perf_ms)
 		}
+		end_counter = get_wall_clock()
+		last_counter = end_counter
 
-		fill_sound_buffer(&sound_output, byte_to_lock, bytes_to_write, &game_sound_buffer)
+		// ========================================
+		// ========= DISPLAY THE FRAME ============
+		// ========================================
+		if sound_is_valid {
+			fill_sound_buffer(&sound_output, byte_to_lock, bytes_to_write, &game_sound_buffer)
+		}
+
+		when ODIN_DEBUG {
+			{
+				pad_x: i32 = 16
+				pad_y: i32 = 16
+
+				top := pad_y
+				bottom := global_back_buffer.height - pad_y
+
+				white :: game.Pixel {
+					b = u8(255),
+					g = u8(255),
+					r = u8(255),
+					a = u8(255),
+				}
+				purple :: game.Pixel {
+					b = u8(255),
+					g = u8(0),
+					r = u8(255),
+					a = u8(255),
+				}
+				green :: game.Pixel {
+					b = u8(0),
+					g = u8(255),
+					r = u8(0),
+					a = u8(255),
+				}
+
+				red :: game.Pixel {
+					b = u8(0),
+					g = u8(0),
+					r = u8(255),
+					a = u8(255),
+				}
+
+				color_multiply :: proc(color: game.Pixel, factor: f32) -> game.Pixel {
+					return game.Pixel {
+						b = u8(f32(color.b) * factor),
+						g = u8(f32(color.g) * factor),
+						r = u8(f32(color.r) * factor),
+						a = u8(f32(color.a) * factor),
+					}
+				}
+
+				C := f32(global_back_buffer.width - 2 * pad_x) / f32(audio_buffer_size)
+
+				x_curr_play := pad_x + i32(C * f32(last_play_cursor))
+				draw_vertical_line(&global_back_buffer, x_curr_play, top, bottom, white, 10)
+
+				x_curr_write := pad_x + i32(C * f32(write_cursor))
+				draw_vertical_line(&global_back_buffer, x_curr_write, top, bottom, purple, 6)
+
+				x_curr_target := pad_x + i32(C * f32(byte_to_lock))
+				draw_vertical_line(&global_back_buffer, x_curr_target, top, bottom, green, 4)
+
+				draw_vertical_line :: proc(
+					buf: ^Offscreen_Buffer,
+					x, top, bottom: i32,
+					color: game.Pixel,
+					width: i32 = 2,
+				) {
+					pixels := slice.reinterpret([]game.Pixel, buf.memory)
+					pitch := buf.pitch_bytes / buf.bytes_per_pixel
+					for y in top ..< bottom {
+						for i in 0 ..< width {
+							pixels[x + i + y * pitch] = color
+						}
+					}
+				}
+			}
+		}
+
 		{
 			dc := win.GetDC(window)
 			defer win.ReleaseDC(window, dc)
@@ -641,10 +749,25 @@ main :: proc() {
 			display_buffer(dc, dims, &global_back_buffer)
 		}
 
-		old_input = new_input
+		// ==========================================
+		// ========= SWITCH BUFFERS N THINGS ========
+		// ==========================================
+		ok := global_audio_buffer.GetCurrentPosition(
+			global_audio_buffer,
+			&last_play_cursor,
+			&write_cursor,
+		)
+		if ok == DS_OK {
+			if sound_is_valid == false {
+				sound_output.running_sample_index =
+					write_cursor / sound_output.bytes_per_sample + sound_output.latency_samples
+			}
 
-		end_counter = get_wall_clock()
-		last_counter = end_counter
+			sound_is_valid = true
+		} else {
+			sound_is_valid = false
+		}
+		old_input = new_input
 	}
 
 	os.exit(cast(int)msg.wParam)

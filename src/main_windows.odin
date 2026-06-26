@@ -318,6 +318,7 @@ Sound_Output :: struct {
 	buffer_size:          u32,
 	running_sample_index: u32,
 	latency_samples:      u32,
+	safety_bytes:         u32,
 }
 
 fill_sound_buffer :: proc(
@@ -379,8 +380,8 @@ main :: proc() {
 	win.QueryPerformanceFrequency(&global_perf_freq)
 
 	monitor_refresh_rate :: 60
-	target_fps :: monitor_refresh_rate / 2
-	target_ms_per_frame: f32 : 1000 / f32(target_fps)
+	game_update_hz :: monitor_refresh_rate / 2
+	target_ms_per_frame: f32 : 1000 / f32(game_update_hz)
 
 
 	global_running = true
@@ -394,18 +395,16 @@ main :: proc() {
 	dsound_init(window, SAMPLE_RATE, audio_buffer_size)
 	offscreen_buffer_resize(&global_back_buffer, {1280, 720})
 
-	audio_latency_frames :: 3
 	sound_output: Sound_Output = {
 		sample_rate          = SAMPLE_RATE,
 		bytes_per_sample     = BYTES_PER_SAMPLE,
 		buffer_size          = audio_buffer_size,
 		running_sample_index = 0,
-		latency_samples      = audio_latency_frames * SAMPLE_RATE / u32(target_fps),
+		latency_samples      = SAMPLE_RATE / u32(game_update_hz),
+		safety_bytes         = (SAMPLE_RATE * BYTES_PER_SAMPLE) / u32(game_update_hz) / 3,
 	}
 	audio_buf := slice.reinterpret([]game.Sound_Sample, win_alloc(sound_output.buffer_size))
 	sound_is_valid := false
-	last_play_cursor: u32 = 0
-	write_cursor: win.DWORD
 
 	global_audio_buffer.Play(global_audio_buffer, 0, 0, DSBPLAY_LOOPING)
 
@@ -419,6 +418,7 @@ main :: proc() {
 
 	end_counter: win.LARGE_INTEGER
 	last_counter := get_wall_clock()
+	flip_wall_clock := get_wall_clock()
 	for res > 0 && global_running {
 		// =============================
 		// ========= READ INPUT ========
@@ -585,29 +585,68 @@ main :: proc() {
 
 
 		// ========================================
-		// ========= DETERMINE SOUND THINGS =======
+		// ========= PREPARE THE VIDEO FRAME ======
 		// ========================================
-		sample_count: u32 = 0
-		bytes_to_write: u32 = 0
-		byte_to_lock: u32 = 0
-		if sound_is_valid {
-			target_cursor :=
-				(last_play_cursor + sound_output.latency_samples * sound_output.bytes_per_sample) %
-				sound_output.buffer_size
 
-			byte_to_lock = sound_output.running_sample_index * sound_output.bytes_per_sample
+		game_video_buffer := game.Offscreen_Buffer {
+			pixels       = slice.reinterpret([]game.Pixel, global_back_buffer.memory),
+			width        = global_back_buffer.width,
+			height       = global_back_buffer.height,
+			pitch_pixels = global_back_buffer.pitch_bytes / global_back_buffer.bytes_per_pixel,
+		}
+
+		game.update_step(&game_memory, &new_input, &game_video_buffer)
+
+
+		// ========================================
+		// ========= OUTPUT AUDIO =================
+		// ========================================
+
+		audio_wall_clock := get_wall_clock()
+		from_begin_to_audio_ms := elapsed_ms(flip_wall_clock, audio_wall_clock)
+
+		play_cursor: win.DWORD
+		write_cursor: win.DWORD
+		if global_audio_buffer.GetCurrentPosition(
+			   global_audio_buffer,
+			   &play_cursor,
+			   &write_cursor,
+		   ) ==
+		   DS_OK {
+			if sound_is_valid == false {
+				sound_output.running_sample_index =
+					write_cursor / sound_output.bytes_per_sample + sound_output.latency_samples
+			}
+
+			byte_to_lock := sound_output.running_sample_index * sound_output.bytes_per_sample
 			byte_to_lock %= sound_output.buffer_size
 
-			temp_play_cursor: win.DWORD
-			global_audio_buffer.GetCurrentPosition(global_audio_buffer, &temp_play_cursor, nil)
-			fmt.printfln(
-				"play: %d\t lock: %d\t diff: %d",
-				temp_play_cursor,
-				byte_to_lock,
-				i64(byte_to_lock) - i64(temp_play_cursor),
+			expected_sound_bytes_per_frame :=
+				(sound_output.sample_rate * sound_output.bytes_per_sample) / game_update_hz
+			ms_left_until_flip := target_ms_per_frame - from_begin_to_audio_ms
+			expected_bytes_until_flip := u32(
+				(ms_left_until_flip / target_ms_per_frame) * f32(expected_sound_bytes_per_frame),
 			)
 
+			expected_frame_boundary_byte := play_cursor + expected_bytes_until_flip
+			safe_write_cursor := write_cursor
+			if safe_write_cursor < play_cursor {
+				safe_write_cursor += sound_output.buffer_size
+			}
+			assert(safe_write_cursor >= play_cursor)
+			safe_write_cursor += sound_output.safety_bytes
+			audio_card_is_low_latency := safe_write_cursor < expected_frame_boundary_byte
 
+			target_cursor: u32
+			if audio_card_is_low_latency {
+				target_cursor = expected_frame_boundary_byte + expected_sound_bytes_per_frame
+			} else {
+				target_cursor =
+					write_cursor + expected_sound_bytes_per_frame + sound_output.safety_bytes
+			}
+			target_cursor %= sound_output.buffer_size
+
+			bytes_to_write: u32
 			// [??????P--------Bwwwwwwwwwww]
 			if byte_to_lock > target_cursor {
 				bytes_to_write = sound_output.buffer_size - byte_to_lock
@@ -619,30 +658,22 @@ main :: proc() {
 				bytes_to_write = target_cursor - byte_to_lock
 			}
 
+			sample_count := bytes_to_write / sound_output.bytes_per_sample
 
-			bytes_to_write = SAMPLE_RATE * BYTES_PER_SAMPLE / u32(target_fps)
 
-			sample_count = bytes_to_write / sound_output.bytes_per_sample
+			game_sound_buffer := game.Sound_Output_Buffer {
+				samples     = audio_buf[:sample_count],
+				sample_rate = sound_output.sample_rate,
+			}
+			game.update_audio(&game_memory, &game_sound_buffer)
+			fill_sound_buffer(&sound_output, byte_to_lock, bytes_to_write, &game_sound_buffer)
+
+
+			sound_is_valid = true
+		} else {
+			sound_is_valid = false
 		}
 
-
-		// ========================================
-		// ========= PREPARE THE FRAME ============
-		// ========================================
-
-		game_sound_buffer := game.Sound_Output_Buffer {
-			samples     = audio_buf[:sample_count],
-			sample_rate = sound_output.sample_rate,
-		}
-
-		game_video_buffer := game.Offscreen_Buffer {
-			pixels       = slice.reinterpret([]game.Pixel, global_back_buffer.memory),
-			width        = global_back_buffer.width,
-			height       = global_back_buffer.height,
-			pitch_pixels = global_back_buffer.pitch_bytes / global_back_buffer.bytes_per_pixel,
-		}
-
-		game.update_step(&game_memory, &new_input, &game_video_buffer, &game_sound_buffer)
 
 		// ========================================
 		// ========= WAIT FOR NEXT FRAME ==========
@@ -657,8 +688,8 @@ main :: proc() {
 				perf_ms = elapsed_ms(last_counter, get_wall_clock())
 			}
 		} else {
-			sound_is_valid = false
 			fmt.printfln("Warning: frame took %.2fms", perf_ms)
+			sound_is_valid = false
 		}
 		end_counter = get_wall_clock()
 		last_counter = end_counter
@@ -666,9 +697,6 @@ main :: proc() {
 		// ========================================
 		// ========= DISPLAY THE FRAME ============
 		// ========================================
-		if sound_is_valid {
-			fill_sound_buffer(&sound_output, byte_to_lock, bytes_to_write, &game_sound_buffer)
-		}
 
 		when ODIN_DEBUG {
 			{
@@ -690,9 +718,9 @@ main :: proc() {
 					r = u8(255),
 					a = u8(255),
 				}
-				green :: game.Pixel {
-					b = u8(0),
-					g = u8(255),
+				blue :: game.Pixel {
+					b = u8(255),
+					g = u8(0),
 					r = u8(0),
 					a = u8(255),
 				}
@@ -715,14 +743,22 @@ main :: proc() {
 
 				C := f32(global_back_buffer.width - 2 * pad_x) / f32(audio_buffer_size)
 
-				x_curr_play := pad_x + i32(C * f32(last_play_cursor))
+				x_curr_play := pad_x + i32(C * f32(play_cursor))
 				draw_vertical_line(&global_back_buffer, x_curr_play, top, bottom, white, 10)
 
 				x_curr_write := pad_x + i32(C * f32(write_cursor))
 				draw_vertical_line(&global_back_buffer, x_curr_write, top, bottom, purple, 6)
 
-				x_curr_target := pad_x + i32(C * f32(byte_to_lock))
-				draw_vertical_line(&global_back_buffer, x_curr_target, top, bottom, green, 4)
+				x_runn_write :=
+					pad_x +
+					i32(
+						C *
+						f32(
+							(sound_output.running_sample_index * sound_output.bytes_per_sample) %
+							u32(audio_buffer_size),
+						),
+					)
+				draw_vertical_line(&global_back_buffer, x_runn_write, top, bottom, blue, 4)
 
 				draw_vertical_line :: proc(
 					buf: ^Offscreen_Buffer,
@@ -734,7 +770,8 @@ main :: proc() {
 					pitch := buf.pitch_bytes / buf.bytes_per_pixel
 					for y in top ..< bottom {
 						for i in 0 ..< width {
-							pixels[x + i + y * pitch] = color
+							clamped := clamp(x + i, 0, buf.width - 1)
+							pixels[clamped + y * pitch] = color
 						}
 					}
 				}
@@ -747,26 +784,12 @@ main :: proc() {
 
 			dims := dimensions(window)
 			display_buffer(dc, dims, &global_back_buffer)
+			flip_wall_clock = get_wall_clock()
 		}
 
 		// ==========================================
 		// ========= SWITCH BUFFERS N THINGS ========
 		// ==========================================
-		ok := global_audio_buffer.GetCurrentPosition(
-			global_audio_buffer,
-			&last_play_cursor,
-			&write_cursor,
-		)
-		if ok == DS_OK {
-			if sound_is_valid == false {
-				sound_output.running_sample_index =
-					write_cursor / sound_output.bytes_per_sample + sound_output.latency_samples
-			}
-
-			sound_is_valid = true
-		} else {
-			sound_is_valid = false
-		}
 		old_input = new_input
 	}
 

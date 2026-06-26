@@ -17,12 +17,7 @@ Memory :: struct {
 	is_initialized: bool,
 }
 
-update_step :: proc(
-	memory: ^Memory,
-	input: ^Input,
-	video_buffer: ^Offscreen_Buffer,
-	Sound_Output_Buffer: ^Sound_Output_Buffer,
-) {
+update_step :: proc(memory: ^Memory, input: ^Input, video_buffer: ^Offscreen_Buffer) {
 	assert(size_of(State) <= len(memory.permament))
 
 	// TODO: figure this one out, why to_type gives a nil pointer
@@ -70,7 +65,11 @@ update_step :: proc(
 	}
 
 	render(video_buffer, state.offset)
-	output_sound(Sound_Output_Buffer, state.tone_hz)
+}
+
+update_audio :: proc(memory: ^Memory, sound: ^Sound_Output_Buffer) {
+	state := cast(^State)&memory.permament[0]
+	output_sound(sound, state.tone_hz)
 }
 
 

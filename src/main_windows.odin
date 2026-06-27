@@ -17,19 +17,74 @@ import "./game"
 load_win_proc :: proc(module: win.HMODULE, name: cstring, destination: rawptr) -> bool {
 	loaded := win.GetProcAddress(module, name)
 
-	if loaded != nil {
-		dest := cast(^uintptr)(destination)
-		dest^ = auto_cast loaded
-		return true
-	}
-
 	when ODIN_DEBUG {
 		if loaded == nil {
 			fmt.printfln("Failed to load %cs", name)
 		}
 	}
 
+	if loaded != nil {
+		dest := cast(^uintptr)(destination)
+		dest^ = auto_cast loaded
+		return true
+	}
+
 	return false
+}
+
+game_update_step_stub: type_of(game.update_step) : proc(
+	memory: ^game.Memory,
+	input: ^game.Input,
+	video_buffer: ^game.Offscreen_Buffer,
+) {}
+
+game_update_audio_stub: type_of(game.update_audio) : proc(
+	memory: ^game.Memory,
+	sound: ^game.Sound_Output_Buffer,
+) {}
+
+Game_Lib :: struct {
+	update_step:  type_of(game.update_step),
+	update_audio: type_of(game.update_audio),
+	module:       win.HMODULE,
+	is_valid:     bool,
+}
+
+load_game :: proc(lib: ^Game_Lib) -> (ok: bool) {
+	if lib.module != nil {
+		lib.update_audio = game_update_audio_stub
+		lib.update_step = game_update_step_stub
+		lib.is_valid = false
+		win.FreeLibrary(lib.module)
+	}
+
+	if win.CopyFileW(
+		   win.L("handmade-odin-lib.dll"),
+		   win.L("handmade-odin-running-lib.dll"),
+		   false,
+	   ) ==
+	   false {
+		fmt.println("Failed to copy handmade-odin-lib.dll to handmade-odin-running.dll")
+		return false
+	}
+
+	new_module := win.LoadLibraryW(win.L("handmade-odin-running-lib.dll"))
+	if new_module == nil {
+		fmt.println("Failed to load handmade-odin-running-lib.dll")
+		return false
+	}
+	lib.module = new_module
+
+	defer if lib.is_valid != true && lib.module != nil {
+		win.FreeLibrary(lib.module)
+	}
+
+	load_win_proc(lib.module, "update_step", &lib.update_step) or_return
+	load_win_proc(lib.module, "update_audio", &lib.update_audio) or_return
+
+	lib.is_valid = true
+
+	return true
 }
 
 xinput_get_state: type_of(win.XInputGetState) = proc "stdcall" (
@@ -46,7 +101,7 @@ xinput_set_state: type_of(win.XInputSetState) = proc "stdcall" (
 	return .DEVICE_NOT_CONNECTED
 }
 
-xinput_load :: proc() {
+load_xinput :: proc() {
 	candidates: []win.LPCWSTR = {
 		win.L("xinput9_1_0.dll"),
 		win.L("xinput1_4.dll"),
@@ -71,7 +126,7 @@ xinput_load :: proc() {
 	load_win_proc(xinput, "XInputSetState", &xinput_set_state)
 }
 
-dsound_load :: proc() -> (ok: bool) {
+load_dsound :: proc() -> (ok: bool) {
 	ok = false
 
 	dsound := win.LoadLibraryW(win.L("dsound.dll"))
@@ -90,7 +145,7 @@ global_audio_buffer: LPDIRECTSOUNDBUFFER
 
 
 dsound_init :: proc(window: win.HWND, samplerate: u32, buffer_size: u32) {
-	if !dsound_load() {
+	if !load_dsound() {
 		fmt.println("Failed to load dsound")
 		return
 	}
@@ -389,8 +444,13 @@ main :: proc() {
 	res: win.LRESULT = 1
 
 
+	game_lib: Game_Lib = {
+		update_audio = game_update_audio_stub,
+		update_step  = game_update_step_stub,
+	}
+	load_game(&game_lib)
 	window := create_window(instance)
-	xinput_load()
+	load_xinput()
 	audio_buffer_size: u32 = SAMPLE_RATE * BYTES_PER_SAMPLE
 	dsound_init(window, SAMPLE_RATE, audio_buffer_size)
 	offscreen_buffer_resize(&global_back_buffer, {1280, 720})
@@ -420,6 +480,7 @@ main :: proc() {
 	last_counter := get_wall_clock()
 	flip_wall_clock := get_wall_clock()
 	for res > 0 && global_running {
+		load_game(&game_lib)
 		// =============================
 		// ========= READ INPUT ========
 		// =============================
@@ -595,7 +656,8 @@ main :: proc() {
 			pitch_pixels = global_back_buffer.pitch_bytes / global_back_buffer.bytes_per_pixel,
 		}
 
-		game.update_step(&game_memory, &new_input, &game_video_buffer)
+		// game.update_step(&game_memory, &new_input, &game_video_buffer)
+		game_lib.update_step(&game_memory, &new_input, &game_video_buffer)
 
 
 		// ========================================
@@ -665,7 +727,9 @@ main :: proc() {
 				samples     = audio_buf[:sample_count],
 				sample_rate = sound_output.sample_rate,
 			}
-			game.update_audio(&game_memory, &game_sound_buffer)
+
+			// game.update_audio(&game_memory, &game_sound_buffer)
+			game_lib.update_audio(&game_memory, &game_sound_buffer)
 			fill_sound_buffer(&sound_output, byte_to_lock, bytes_to_write, &game_sound_buffer)
 
 

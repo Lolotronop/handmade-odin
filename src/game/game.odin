@@ -7,6 +7,7 @@ import "core:math"
 // ==================================
 State :: struct {
 	tone_hz: f32,
+	sine_t:  f32,
 	offset:  [2]i32,
 }
 
@@ -17,6 +18,7 @@ Memory :: struct {
 	is_initialized: bool,
 }
 
+@(export)
 update_step :: proc(memory: ^Memory, input: ^Input, video_buffer: ^Offscreen_Buffer) {
 	assert(size_of(State) <= len(memory.permament))
 
@@ -67,9 +69,10 @@ update_step :: proc(memory: ^Memory, input: ^Input, video_buffer: ^Offscreen_Buf
 	render(video_buffer, state.offset)
 }
 
+@(export)
 update_audio :: proc(memory: ^Memory, sound: ^Sound_Output_Buffer) {
 	state := cast(^State)&memory.permament[0]
-	output_sound(sound, state.tone_hz)
+	output_sound(state, sound, state.tone_hz)
 }
 
 
@@ -117,15 +120,13 @@ Sound_Output_Buffer :: struct {
 	sample_rate: u32,
 }
 
-global_sine_t: f32 = 0.0
-
-output_sound :: proc(buf: ^Sound_Output_Buffer, tone_hz: f32 = 440.0) {
+output_sound :: proc(state: ^State, buf: ^Sound_Output_Buffer, tone_hz: f32 = 440.0) {
 	volume: f32 = 0.1
 	wave_period: f32 = f32(buf.sample_rate) / tone_hz
 
 	for &sample in buf.samples {
-		sine_value: f32 = math.sin(global_sine_t)
-		global_sine_t = math.mod(global_sine_t + math.TAU / wave_period, math.TAU)
+		sine_value: f32 = math.sin(state.sine_t)
+		state.sine_t = math.mod(state.sine_t + math.TAU / wave_period, math.TAU)
 
 		sample_value := cast(i16)(sine_value * volume * cast(f32)(2 << 14))
 

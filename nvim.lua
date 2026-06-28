@@ -114,7 +114,8 @@ end
 local function build(mode)
     local time = vim.loop.hrtime()
     local status = await_system({ 'cmd', '/c', 'build.bat', mode }, { text = true })
-    if status.code ~= 0 then
+
+    if string.len(status.stderr) > 0 then
         vim.notify("Build failed", vim.log.levels.ERROR)
         vim.schedule(function()
             odin_errors_to_quickfix(status.stderr)
@@ -178,3 +179,7 @@ vim.keymap.set('n', '<leader>cf', function() async(full_recompile) end,
 
 vim.keymap.set('n', '<leader>cc', function() async(game_recompile) end,
     { desc = "[C]ompile [C]ode only the game part" })
+
+
+vim.keymap.set('n', '<leader>ck', function() async(kill) end,
+    { desc = "[C]ompile [K]kill the thing just outright shoot it in the head" })

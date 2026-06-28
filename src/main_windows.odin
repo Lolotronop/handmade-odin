@@ -43,34 +43,84 @@ game_update_audio_stub: type_of(game.update_audio) : proc(
 	sound: ^game.Sound_Output_Buffer,
 ) {}
 
-Game_Lib :: struct {
-	update_step:  type_of(game.update_step),
-	update_audio: type_of(game.update_audio),
-	module:       win.HMODULE,
-	is_valid:     bool,
+Game_Code :: struct {
+	update_step:         type_of(game.update_step),
+	update_audio:        type_of(game.update_audio),
+	module:              win.HMODULE,
+	is_valid:            bool,
+	dll_last_write_time: i64,
 }
 
-load_game :: proc(lib: ^Game_Lib) -> (ok: bool) {
+cat_string16 :: proc(sourceA: string16, sourceB: string16, dest: []u16) {
+	assert(len(sourceA) + len(sourceB) <= len(dest))
+	for c, i in transmute([]u16)(sourceA) {dest[i] = c}
+	for c, i in transmute([]u16)(sourceB) {dest[i + len(sourceA)] = c}
+}
+
+load_game_code :: proc(lib: ^Game_Code) -> (ok: bool) {
+	SOURCE_DLL_NAME :: "handmade-odin-lib.dll"
+	TEMP_DLL_NAME :: "handmade-odin-running-lib.dll"
+
+
+	path_buf: [win.MAX_PATH]u16
+	path_len := win.GetModuleFileNameW(nil, &path_buf[0], u32(len(path_buf)))
+	full_path := string16(path_buf[:path_len])
+	path := full_path
+
+	for rune, i in full_path {
+		if rune == '\\' {
+			path = full_path[:i + 1]
+		}
+	}
+
+	source_buf: [win.MAX_PATH]u16
+	temp_buf: [win.MAX_PATH]u16
+
+	cat_string16(path, SOURCE_DLL_NAME, source_buf[:])
+	cat_string16(path, TEMP_DLL_NAME, temp_buf[:])
+
+	source_dll_full_path := cstring16(&source_buf[0])
+	temp_dll_full_path := cstring16(&temp_buf[0])
+
+
+	time := get_file_time(source_dll_full_path)
+
+	if time <= lib.dll_last_write_time {
+		return true
+	}
+
 	if lib.module != nil {
 		lib.update_audio = game_update_audio_stub
 		lib.update_step = game_update_step_stub
 		lib.is_valid = false
-		win.FreeLibrary(lib.module)
+
+		// TODO: this does not unload the dll instantly
+		// because of that, CopyFileW call fails on the same frame.
+		// it will eventually work after a couple of frames tho
+		if !win.FreeLibrary(lib.module) {
+			DEBUG_err_buf: [1024]u16
+			fmt.printfln(
+				"Failed to free library, err: %s",
+				DEBUG_format_error(DEBUG_err_buf[:], win.GetLastError()),
+			)
+			return false
+		}
+		lib.module = nil
 	}
 
-	if win.CopyFileW(
-		   win.L("handmade-odin-lib.dll"),
-		   win.L("handmade-odin-running-lib.dll"),
-		   false,
-	   ) ==
-	   false {
-		fmt.println("Failed to copy handmade-odin-lib.dll to handmade-odin-running.dll")
-		return false
+	if win.CopyFileW(source_dll_full_path, temp_dll_full_path, false) == false {
+		DEBUG_err_buf: [1024]u16
+		fmt.printfln(
+			"Failed to copy try %s to %s, err: %s",
+			SOURCE_DLL_NAME,
+			TEMP_DLL_NAME,
+			DEBUG_format_error(DEBUG_err_buf[:], win.GetLastError()),
+		)
 	}
 
-	new_module := win.LoadLibraryW(win.L("handmade-odin-running-lib.dll"))
+	new_module := win.LoadLibraryW(win.L(TEMP_DLL_NAME))
 	if new_module == nil {
-		fmt.println("Failed to load handmade-odin-running-lib.dll")
+		fmt.println("Failed to load %s", TEMP_DLL_NAME)
 		return false
 	}
 	lib.module = new_module
@@ -83,6 +133,7 @@ load_game :: proc(lib: ^Game_Lib) -> (ok: bool) {
 	load_win_proc(lib.module, "update_audio", &lib.update_audio) or_return
 
 	lib.is_valid = true
+	lib.dll_last_write_time = time
 
 	return true
 }
@@ -444,11 +495,11 @@ main :: proc() {
 	res: win.LRESULT = 1
 
 
-	game_lib: Game_Lib = {
+	game_lib: Game_Code = {
 		update_audio = game_update_audio_stub,
 		update_step  = game_update_step_stub,
 	}
-	load_game(&game_lib)
+	load_game_code(&game_lib)
 	window := create_window(instance)
 	load_xinput()
 	audio_buffer_size: u32 = SAMPLE_RATE * BYTES_PER_SAMPLE
@@ -480,7 +531,7 @@ main :: proc() {
 	last_counter := get_wall_clock()
 	flip_wall_clock := get_wall_clock()
 	for res > 0 && global_running {
-		load_game(&game_lib)
+		load_game_code(&game_lib)
 		// =============================
 		// ========= READ INPUT ========
 		// =============================
@@ -874,4 +925,25 @@ get_wall_clock :: #force_inline proc() -> win.LARGE_INTEGER {
 	counter: win.LARGE_INTEGER
 	win.QueryPerformanceCounter(&counter)
 	return counter
+}
+
+get_file_time :: proc(filename: cstring16) -> (time: i64) {
+	found_data: win.WIN32_FIND_DATAW
+	hndl := win.FindFirstFileW(filename, &found_data)
+	defer if hndl != win.INVALID_HANDLE_VALUE {win.FindClose(hndl)}
+
+	return win.FILETIME_as_unix_nanoseconds(found_data.ftLastWriteTime)
+}
+
+DEBUG_format_error :: proc(buf: []u16, err: win.DWORD) -> string16 {
+	len := win.FormatMessageW(
+		win.FORMAT_MESSAGE_FROM_SYSTEM | win.FORMAT_MESSAGE_IGNORE_INSERTS,
+		nil,
+		err,
+		win.MAKELANGID(win.LANG_NEUTRAL, win.SUBLANG_DEFAULT),
+		&buf[0],
+		u32(len(buf)),
+		nil,
+	)
+	return string16(buf[:len])
 }

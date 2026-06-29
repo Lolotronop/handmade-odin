@@ -6,6 +6,7 @@ if "%1"=="full" (
 odin build src^
     -debug^
     -out:build/handmade-odin.exe^
+    -subsystem:windows^
     -vet-unused^
     -vet-unused-variables^
     -vet-unused-imports^

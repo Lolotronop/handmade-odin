@@ -19,7 +19,7 @@ load_win_proc :: proc(module: win.HMODULE, name: cstring, destination: rawptr) -
 
 	when ODIN_DEBUG {
 		if loaded == nil {
-			fmt.printfln("Failed to load %cs", name)
+			DEBUG_printf("Failed to load %cs", name)
 		}
 	}
 
@@ -98,29 +98,24 @@ load_game_code :: proc(lib: ^Game_Code) -> (ok: bool) {
 		// because of that, CopyFileW call fails on the same frame.
 		// it will eventually work after a couple of frames tho
 		if !win.FreeLibrary(lib.module) {
-			DEBUG_err_buf: [1024]u16
-			fmt.printfln(
-				"Failed to free library, err: %s",
-				DEBUG_format_error(DEBUG_err_buf[:], win.GetLastError()),
-			)
+			DEBUG_printfln("Failed to free library,\n err: %s", DEBUG_get_win_error())
 			return false
 		}
 		lib.module = nil
 	}
 
 	if win.CopyFileW(source_dll_full_path, temp_dll_full_path, false) == false {
-		DEBUG_err_buf: [1024]u16
-		fmt.printfln(
-			"Failed to copy try %s to %s, err: %s",
+		DEBUG_printfln(
+			"Failed to copy try %s to %s,\n err: %s",
 			SOURCE_DLL_NAME,
 			TEMP_DLL_NAME,
-			DEBUG_format_error(DEBUG_err_buf[:], win.GetLastError()),
+			DEBUG_get_win_error(),
 		)
 	}
 
 	new_module := win.LoadLibraryW(win.L(TEMP_DLL_NAME))
 	if new_module == nil {
-		fmt.println("Failed to load %s", TEMP_DLL_NAME)
+		DEBUG_printfln("Failed to load %s", TEMP_DLL_NAME)
 		return false
 	}
 	lib.module = new_module
@@ -169,7 +164,7 @@ load_xinput :: proc() {
 	}
 
 	if xinput == nil {
-		fmt.println("Failed to load xinput")
+		DEBUG_println("Failed to load xinput")
 		return
 	}
 
@@ -182,7 +177,7 @@ load_dsound :: proc() -> (ok: bool) {
 
 	dsound := win.LoadLibraryW(win.L("dsound.dll"))
 	if dsound == nil {
-		fmt.println("Failed to load dsound")
+		DEBUG_println("Failed to load dsound")
 		return
 	}
 
@@ -197,7 +192,7 @@ global_audio_buffer: LPDIRECTSOUNDBUFFER
 
 dsound_init :: proc(window: win.HWND, samplerate: u32, buffer_size: u32) {
 	if !load_dsound() {
-		fmt.println("Failed to load dsound")
+		DEBUG_println("Failed to load dsound")
 		return
 	}
 
@@ -206,7 +201,7 @@ dsound_init :: proc(window: win.HWND, samplerate: u32, buffer_size: u32) {
 	direct_sound_create(nil, &ds, nil)
 
 	if res := ds.SetCooperativeLevel(ds, window, DSSCL_PRIORITY); res != 0 {
-		fmt.printfln("Failed to set cooperative level 0x%x", u32(res))
+		DEBUG_printfln("Failed to set cooperative level 0x%x", u32(res))
 		return
 	}
 
@@ -236,11 +231,11 @@ dsound_init :: proc(window: win.HWND, samplerate: u32, buffer_size: u32) {
 
 	if res := ds.CreateSoundBuffer(ds, &secondary_buffer_description, &primary_buffer, nil);
 	   res != 0 {
-		fmt.printfln("Failed to create primary buffer 0x%x", u32(res))
+		DEBUG_printfln("Failed to create primary buffer 0x%x", u32(res))
 		return
 	}
 	if res := primary_buffer.SetFormat(primary_buffer, &format); res != 0 {
-		fmt.printfln("Failed to set format 0x%x", u32(res))
+		DEBUG_printfln("Failed to set format 0x%x", u32(res))
 		return
 	}
 	// ----------------------------------------------
@@ -252,7 +247,7 @@ dsound_init :: proc(window: win.HWND, samplerate: u32, buffer_size: u32) {
 	}
 
 	if res := ds.CreateSoundBuffer(ds, &buffer_description, &global_audio_buffer, nil); res != 0 {
-		fmt.printfln("Failed to create secondary buffer 0x%x", u32(res))
+		DEBUG_printfln("Failed to create secondary buffer 0x%x", u32(res))
 		return
 	}
 }
@@ -803,7 +798,7 @@ main :: proc() {
 				perf_ms = elapsed_ms(last_counter, get_wall_clock())
 			}
 		} else {
-			fmt.printfln("Warning: frame took %.2fms", perf_ms)
+			DEBUG_printfln("Warning: frame took %.2fms", perf_ms)
 			sound_is_valid = false
 		}
 		end_counter = get_wall_clock()
@@ -906,6 +901,8 @@ main :: proc() {
 		// ========= SWITCH BUFFERS N THINGS ========
 		// ==========================================
 		old_input = new_input
+
+		free_all(context.temp_allocator)
 	}
 
 	os.exit(cast(int)msg.wParam)
@@ -935,7 +932,9 @@ get_file_time :: proc(filename: cstring16) -> (time: i64) {
 	return win.FILETIME_as_unix_nanoseconds(found_data.ftLastWriteTime)
 }
 
-DEBUG_format_error :: proc(buf: []u16, err: win.DWORD) -> string16 {
+DEBUG_get_win_error :: proc() -> string16 {
+	err := win.GetLastError()
+	buf := make([]u16, 1024, allocator = context.temp_allocator)
 	len := win.FormatMessageW(
 		win.FORMAT_MESSAGE_FROM_SYSTEM | win.FORMAT_MESSAGE_IGNORE_INSERTS,
 		nil,
@@ -946,4 +945,24 @@ DEBUG_format_error :: proc(buf: []u16, err: win.DWORD) -> string16 {
 		nil,
 	)
 	return string16(buf[:len])
+}
+
+DEBUG_print :: proc(str: string) {
+	out := win.utf8_to_wstring_alloc(str, context.temp_allocator)
+	win.OutputDebugStringW(out)
+}
+
+DEBUG_println :: proc(str: string) {
+	DEBUG_print(str)
+	DEBUG_print("\n")
+}
+
+DEBUG_printf :: proc(format: string, args: ..any) {
+	str := fmt.tprintf(format, ..args)
+	DEBUG_print(str)
+}
+
+DEBUG_printfln :: proc(format: string, args: ..any) {
+	str := fmt.tprintfln(format, ..args)
+	DEBUG_print(str)
 }

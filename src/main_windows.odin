@@ -459,9 +459,9 @@ fill_sound_buffer :: proc(
 	global_audio_buffer.Unlock(global_audio_buffer, region1, region1_size, region2, region2_size)
 }
 
-Kilabytes :: #force_inline proc($mb: u64) -> (bytes: u64) {return mb * 1024}
+Kilabytes :: #force_inline proc($kb: u64) -> (bytes: u64) {return kb * 1024}
 Megabytes :: #force_inline proc($mb: u64) -> (bytes: u64) {return mb * 1024 * 1024}
-Gigabytes :: #force_inline proc($mb: u64) -> (bytes: u64) {return mb * 1024 * 1024 * 1024}
+Gigabytes :: #force_inline proc($gb: u64) -> (bytes: u64) {return gb * 1024 * 1024 * 1024}
 
 win_alloc :: proc(#any_int size: uint) -> []byte {
 	return slice.bytes_from_ptr(
@@ -471,6 +471,105 @@ win_alloc :: proc(#any_int size: uint) -> []byte {
 }
 
 global_perf_freq: win.LARGE_INTEGER = 0
+
+Platform_State :: struct {
+	recording_handle:     win.HANDLE,
+	playback_handle:      win.HANDLE,
+	input_recoding_index: i32,
+	input_playing_index:  i32,
+	game_memory_block:    []byte,
+}
+
+begin_recording_input :: proc(platform_state: ^Platform_State, index: i32) {
+	platform_state.input_recoding_index = index
+
+	filename := cstring16(win.L("foo.hmi"))
+	platform_state.recording_handle = win.CreateFileW(
+		filename,
+		win.GENERIC_WRITE,
+		0,
+		nil,
+		win.CREATE_ALWAYS,
+		0,
+		nil,
+	)
+	total_size := len(platform_state.game_memory_block)
+
+	assert(total_size < 1 << 32)
+
+	bytes_written: win.DWORD
+	win.WriteFile(
+		platform_state.recording_handle,
+		&platform_state.game_memory_block[0],
+		u32(total_size),
+		&bytes_written,
+		nil,
+	)
+
+	if bytes_written != u32(total_size) {
+		DEBUG_printfln("Failed to write to file %s", DEBUG_get_win_error())
+	}
+}
+
+end_recording_input :: proc(platform_state: ^Platform_State) {
+	win.CloseHandle(platform_state.recording_handle)
+	platform_state.recording_handle = win.INVALID_HANDLE
+	platform_state.input_recoding_index = 0
+}
+
+begin_playback_input :: proc(platform_state: ^Platform_State, index: i32) {
+	platform_state.input_playing_index = index
+
+	platform_state.playback_handle = win.CreateFileW(
+		win.L("foo.hmi"),
+		win.GENERIC_READ,
+		win.FILE_SHARE_READ,
+		nil,
+		win.OPEN_EXISTING,
+		0,
+		nil,
+	)
+
+	total_size := u32(len(platform_state.game_memory_block))
+	bytes_read: win.DWORD
+	win.ReadFile(
+		platform_state.playback_handle,
+		&platform_state.game_memory_block[0],
+		total_size,
+		&bytes_read,
+		nil,
+	)
+}
+
+end_playback_input :: proc(platform_state: ^Platform_State) {
+	win.CloseHandle(platform_state.playback_handle)
+	platform_state.playback_handle = win.INVALID_HANDLE
+	platform_state.input_playing_index = 0
+}
+
+
+record_input :: proc(platform_state: ^Platform_State, new_input: ^game.Input) {
+	bytes_written: win.DWORD
+	win.WriteFile(
+		platform_state.recording_handle,
+		new_input,
+		size_of(game.Input),
+		&bytes_written,
+		nil,
+	)
+}
+
+
+playback_input :: proc(platform_state: ^Platform_State, input: ^game.Input) {
+	bytes_read: win.DWORD
+	win.ReadFile(platform_state.playback_handle, input, size_of(game.Input), &bytes_read, nil)
+	if bytes_read != size_of(game.Input) {
+		playing_index := platform_state.input_playing_index
+		end_playback_input(platform_state)
+		begin_playback_input(platform_state, playing_index)
+		win.ReadFile(platform_state.playback_handle, input, size_of(game.Input), &bytes_read, nil)
+	}
+}
 
 main :: proc() {
 	instance, lpCmdLine, startup_info := kinda_winmain()
@@ -514,13 +613,20 @@ main :: proc() {
 
 	global_audio_buffer.Play(global_audio_buffer, 0, 0, DSBPLAY_LOOPING)
 
+	platform_state := Platform_State{}
 
-	old_input := game.Input{}
+	permament_size := Megabytes(64)
+	transient_size := Megabytes(64)
+
+	platform_state.game_memory_block = win_alloc(permament_size + transient_size)
 
 	game_memory := game.Memory{}
-	game_memory.permament = win_alloc(Megabytes(64))
-	game_memory.transient = win_alloc(Gigabytes(4))
+	game_memory.permament = platform_state.game_memory_block[:permament_size]
+	game_memory.transient = platform_state.game_memory_block[permament_size:permament_size +
+	transient_size]
 
+
+	old_input := game.Input{}
 
 	end_counter: win.LARGE_INTEGER
 	last_counter := get_wall_clock()
@@ -562,7 +668,7 @@ main :: proc() {
 				}
 
 				process_keyboard :: proc(new_state: ^game.Input_Button, is_down: bool) {
-					assert(new_state.ended_down != is_down)
+					// assert(new_state.ended_down != is_down)
 					new_state.ended_down = is_down
 					new_state.half_transition_count += 1
 				}
@@ -586,12 +692,25 @@ main :: proc() {
 				if (was_down != is_down) {
 					new := &new_input.controllers[0]
 
-					if (keycode == 'W') {process_keyboard(&new.move_up, is_down)}
-					if (keycode == 'A') {process_keyboard(&new.move_left, is_down)}
-					if (keycode == 'S') {process_keyboard(&new.move_down, is_down)}
-					if (keycode == 'D') {process_keyboard(&new.move_right, is_down)}
-					if (keycode == 'E') {process_keyboard(&new.a, is_down)}
-					if (keycode == 'Q') {process_keyboard(&new.b, is_down)}
+					if keycode == 'W' {process_keyboard(&new.move_up, is_down)}
+					if keycode == 'A' {process_keyboard(&new.move_left, is_down)}
+					if keycode == 'S' {process_keyboard(&new.move_down, is_down)}
+					if keycode == 'D' {process_keyboard(&new.move_right, is_down)}
+					if keycode == 'E' {process_keyboard(&new.a, is_down)}
+					if keycode == 'Q' {process_keyboard(&new.b, is_down)}
+
+					if keycode == 'L' && is_down {
+						if platform_state.input_recoding_index == 0 &&
+						   platform_state.input_playing_index == 0 {
+							begin_recording_input(&platform_state, 1)
+						} else if platform_state.input_recoding_index != 0 {
+							end_recording_input(&platform_state)
+							begin_playback_input(&platform_state, 1)
+						} else if platform_state.input_playing_index != 0 {
+							end_playback_input(&platform_state)
+							new_input = game.Input{}
+						}
+					}
 				}
 			case:
 				win.TranslateMessage(&msg)
@@ -703,6 +822,12 @@ main :: proc() {
 		}
 
 		// game.update_step(&game_memory, &new_input, &game_video_buffer)
+		if platform_state.input_recoding_index != 0 {
+			record_input(&platform_state, &new_input)
+		}
+		if platform_state.input_playing_index != 0 {
+			playback_input(&platform_state, &new_input)
+		}
 		game_lib.update_step(&game_memory, &new_input, &game_video_buffer)
 
 
@@ -814,7 +939,7 @@ main :: proc() {
 				pad_y: i32 = 16
 
 				top := pad_y
-				bottom := global_back_buffer.height - pad_y
+				bottom := (global_back_buffer.height - pad_y) / 10
 
 				white :: game.Pixel {
 					b = u8(255),

@@ -159,8 +159,7 @@ output_sound :: proc(state: ^Game_State, buf: ^Sound_Output_Buffer, tone_hz: f32
 	volume: f32 = 0.1
 	wave_period: f32 = f32(buf.sample_rate) / tone_hz
 
-	// for &sample in buf.samples {
-	for &sample in buf.samples[:0] {
+	for &sample in buf.samples {
 		sine_value: f32 = math.sin(state.sine_t)
 		state.sine_t = math.mod(state.sine_t + math.TAU / wave_period, math.TAU)
 

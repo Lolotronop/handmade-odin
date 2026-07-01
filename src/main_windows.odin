@@ -32,17 +32,6 @@ load_win_proc :: proc(module: win.HMODULE, name: cstring, destination: rawptr) -
 	return false
 }
 
-game_update_step_stub: type_of(game.update_step) : proc(
-	memory: ^game.Memory,
-	input: ^game.Input,
-	video_buffer: ^game.Offscreen_Buffer,
-) {}
-
-game_update_audio_stub: type_of(game.update_audio) : proc(
-	memory: ^game.Memory,
-	sound: ^game.Sound_Output_Buffer,
-) {}
-
 Game_Code :: struct {
 	update_step:         type_of(game.update_step),
 	update_audio:        type_of(game.update_audio),
@@ -51,37 +40,50 @@ Game_Code :: struct {
 	dll_last_write_time: i64,
 }
 
-cat_string16 :: proc(sourceA: string16, sourceB: string16, dest: []u16) {
+cat_string16 :: proc(sourceA: string16, sourceB: string16, dest: []u16) -> int {
 	assert(len(sourceA) + len(sourceB) <= len(dest))
 	for c, i in transmute([]u16)(sourceA) {dest[i] = c}
 	for c, i in transmute([]u16)(sourceB) {dest[i + len(sourceA)] = c}
+	return len(sourceA) + len(sourceB)
 }
 
-load_game_code :: proc(lib: ^Game_Code) -> (ok: bool) {
-	SOURCE_DLL_NAME :: "handmade-odin-lib.dll"
-	TEMP_DLL_NAME :: "handmade-odin-running-lib.dll"
 
+get_exe_path :: proc(platform_state: ^Platform_State) {
+	len := win.GetModuleFileNameW(
+		nil,
+		&platform_state.EXE_file_name[0],
+		u32(len(platform_state.EXE_file_name)),
+	)
 
-	path_buf: [win.MAX_PATH]u16
-	path_len := win.GetModuleFileNameW(nil, &path_buf[0], u32(len(path_buf)))
-	full_path := string16(path_buf[:path_len])
-	path := full_path
+	full_path := string16(platform_state.EXE_file_name[:len])
+	platform_state.one_past_last_slash = full_path
 
 	for rune, i in full_path {
 		if rune == '\\' {
-			path = full_path[:i + 1]
+			platform_state.one_past_last_slash = full_path[:i + 1]
 		}
 	}
+}
 
+build_exe_path_filename :: proc(
+	platform_state: ^Platform_State,
+	filename: string16,
+	dest: []u16,
+) -> int {
+	return cat_string16(platform_state.one_past_last_slash, filename, dest)
+}
+
+
+load_game_code :: proc(platform_state: ^Platform_State, lib: ^Game_Code) -> (ok: bool) {
+	SOURCE_DLL_NAME :: "handmade-odin-lib.dll"
 	source_buf: [win.MAX_PATH]u16
-	temp_buf: [win.MAX_PATH]u16
-
-	cat_string16(path, SOURCE_DLL_NAME, source_buf[:])
-	cat_string16(path, TEMP_DLL_NAME, temp_buf[:])
-
+	build_exe_path_filename(platform_state, SOURCE_DLL_NAME, source_buf[:])
 	source_dll_full_path := cstring16(&source_buf[0])
-	temp_dll_full_path := cstring16(&temp_buf[0])
 
+	TEMP_DLL_NAME :: "handmade-odin-running-lib.dll"
+	temp_buf: [win.MAX_PATH]u16
+	build_exe_path_filename(platform_state, TEMP_DLL_NAME, temp_buf[:])
+	temp_dll_full_path := cstring16(&temp_buf[0])
 
 	time := get_file_time(source_dll_full_path)
 
@@ -90,8 +92,8 @@ load_game_code :: proc(lib: ^Game_Code) -> (ok: bool) {
 	}
 
 	if lib.module != nil {
-		lib.update_audio = game_update_audio_stub
-		lib.update_step = game_update_step_stub
+		lib.update_audio = nil
+		lib.update_step = nil
 		lib.is_valid = false
 
 		// TODO: this does not unload the dll instantly
@@ -355,8 +357,8 @@ display_buffer :: proc(device_context: win.HDC, window_dims: [2]i32, buf: ^Offsc
 		device_context,
 		0,
 		0,
-		window_dims.x,
-		window_dims.y,
+		buf.width,
+		buf.height,
 		0,
 		0,
 		buf.width,
@@ -463,29 +465,40 @@ Kilabytes :: #force_inline proc($kb: u64) -> (bytes: u64) {return kb * 1024}
 Megabytes :: #force_inline proc($mb: u64) -> (bytes: u64) {return mb * 1024 * 1024}
 Gigabytes :: #force_inline proc($gb: u64) -> (bytes: u64) {return gb * 1024 * 1024 * 1024}
 
-win_alloc :: proc(#any_int size: uint) -> []byte {
-	return slice.bytes_from_ptr(
-		win.VirtualAlloc(nil, size, win.MEM_COMMIT | win.MEM_RESERVE, win.PAGE_READWRITE),
-		int(size),
-	)
+win_alloc :: proc(#any_int size: uint, large_pages: bool = false) -> []byte {
+	flags: win.DWORD = win.MEM_COMMIT | win.MEM_RESERVE
+	if large_pages {
+		flags |= win.MEM_LARGE_PAGES
+	}
+	return slice.bytes_from_ptr(win.VirtualAlloc(nil, size, flags, win.PAGE_READWRITE), int(size))
 }
 
 global_perf_freq: win.LARGE_INTEGER = 0
 
+STATE_FILE_NAME_COUNT :: win.MAX_PATH
 Platform_State :: struct {
 	recording_handle:     win.HANDLE,
 	playback_handle:      win.HANDLE,
 	input_recoding_index: i32,
 	input_playing_index:  i32,
 	game_memory_block:    []byte,
+	EXE_file_name:        [STATE_FILE_NAME_COUNT]u16,
+	one_past_last_slash:  string16,
+}
+
+get_input_file_location :: proc(platform_state: ^Platform_State, index: i32, dest: []u16) -> int {
+	assert(index == 1)
+	return build_exe_path_filename(platform_state, string16("loop_edit.hmi"), dest)
 }
 
 begin_recording_input :: proc(platform_state: ^Platform_State, index: i32) {
 	platform_state.input_recoding_index = index
 
-	filename := cstring16(win.L("foo.hmi"))
+
+	path: [STATE_FILE_NAME_COUNT]u16
+	_ = get_input_file_location(platform_state, index, path[:])
 	platform_state.recording_handle = win.CreateFileW(
-		filename,
+		cstring16(&path[0]),
 		win.GENERIC_WRITE,
 		0,
 		nil,
@@ -493,6 +506,8 @@ begin_recording_input :: proc(platform_state: ^Platform_State, index: i32) {
 		0,
 		nil,
 	)
+	assert(platform_state.recording_handle != win.INVALID_HANDLE_VALUE)
+
 	total_size := len(platform_state.game_memory_block)
 
 	assert(total_size < 1 << 32)
@@ -520,8 +535,10 @@ end_recording_input :: proc(platform_state: ^Platform_State) {
 begin_playback_input :: proc(platform_state: ^Platform_State, index: i32) {
 	platform_state.input_playing_index = index
 
+	path: [STATE_FILE_NAME_COUNT]u16
+	_ = get_input_file_location(platform_state, index, path[:])
 	platform_state.playback_handle = win.CreateFileW(
-		win.L("foo.hmi"),
+		cstring16(&path[0]),
 		win.GENERIC_READ,
 		win.FILE_SHARE_READ,
 		nil,
@@ -589,11 +606,12 @@ main :: proc() {
 	res: win.LRESULT = 1
 
 
-	game_lib: Game_Code = {
-		update_audio = game_update_audio_stub,
-		update_step  = game_update_step_stub,
-	}
-	load_game_code(&game_lib)
+	platform_state := Platform_State{}
+	get_exe_path(&platform_state)
+
+
+	game_lib: Game_Code = {}
+	load_game_code(&platform_state, &game_lib)
 	window := create_window(instance)
 	load_xinput()
 	audio_buffer_size: u32 = SAMPLE_RATE * BYTES_PER_SAMPLE
@@ -613,12 +631,13 @@ main :: proc() {
 
 	global_audio_buffer.Play(global_audio_buffer, 0, 0, DSBPLAY_LOOPING)
 
-	platform_state := Platform_State{}
-
 	permament_size := Megabytes(64)
 	transient_size := Megabytes(64)
 
-	platform_state.game_memory_block = win_alloc(permament_size + transient_size)
+	platform_state.game_memory_block = win_alloc(
+		permament_size + transient_size,
+		large_pages = false,
+	)
 
 	game_memory := game.Memory{}
 	game_memory.permament = platform_state.game_memory_block[:permament_size]
@@ -632,7 +651,7 @@ main :: proc() {
 	last_counter := get_wall_clock()
 	flip_wall_clock := get_wall_clock()
 	for res > 0 && global_running {
-		load_game_code(&game_lib)
+		load_game_code(&platform_state, &game_lib)
 		// =============================
 		// ========= READ INPUT ========
 		// =============================
@@ -739,13 +758,16 @@ main :: proc() {
 			pad := state.Gamepad
 			new.is_connected = true
 
-
 			left_daedzone :: win.XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE
 			new.stick_x = normalize_stick(pad.sThumbLX, left_daedzone)
 			new.stick_y = normalize_stick(pad.sThumbLY, left_daedzone)
 
+			new.is_analog = old.is_analog
 			if new.stick_x != 0 || new.stick_y != 0 {
 				new.is_analog = true
+			}
+			if bits.DPAD_LEFT | bits.DPAD_UP | bits.DPAD_DOWN | bits.DPAD_RIGHT in pad.wButtons {
+				new.is_analog = false
 			}
 
 			threshhold :: 0.5
@@ -821,14 +843,15 @@ main :: proc() {
 			pitch_pixels = global_back_buffer.pitch_bytes / global_back_buffer.bytes_per_pixel,
 		}
 
-		// game.update_step(&game_memory, &new_input, &game_video_buffer)
 		if platform_state.input_recoding_index != 0 {
 			record_input(&platform_state, &new_input)
 		}
 		if platform_state.input_playing_index != 0 {
 			playback_input(&platform_state, &new_input)
 		}
-		game_lib.update_step(&game_memory, &new_input, &game_video_buffer)
+		if game_lib.update_step != nil {
+			game_lib.update_step(&game_memory, &new_input, &game_video_buffer)
+		}
 
 
 		// ========================================
@@ -899,8 +922,9 @@ main :: proc() {
 				sample_rate = sound_output.sample_rate,
 			}
 
-			// game.update_audio(&game_memory, &game_sound_buffer)
-			game_lib.update_audio(&game_memory, &game_sound_buffer)
+			if game_lib.update_audio != nil {
+				game_lib.update_audio(&game_memory, &game_sound_buffer)
+			}
 			fill_sound_buffer(&sound_output, byte_to_lock, bytes_to_write, &game_sound_buffer)
 
 
@@ -1050,11 +1074,9 @@ get_wall_clock :: #force_inline proc() -> win.LARGE_INTEGER {
 }
 
 get_file_time :: proc(filename: cstring16) -> (time: i64) {
-	found_data: win.WIN32_FIND_DATAW
-	hndl := win.FindFirstFileW(filename, &found_data)
-	defer if hndl != win.INVALID_HANDLE_VALUE {win.FindClose(hndl)}
-
-	return win.FILETIME_as_unix_nanoseconds(found_data.ftLastWriteTime)
+	file_info: win.WIN32_FILE_ATTRIBUTE_DATA
+	assert(win.GetFileAttributesExW(filename, win.GetFileExInfoStandard, &file_info) == true)
+	return win.FILETIME_as_unix_nanoseconds(file_info.ftLastWriteTime)
 }
 
 DEBUG_get_win_error :: proc() -> string16 {

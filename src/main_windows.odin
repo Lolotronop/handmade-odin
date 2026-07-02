@@ -470,96 +470,94 @@ win_alloc :: proc(#any_int size: uint, large_pages: bool = false) -> []byte {
 	if large_pages {
 		flags |= win.MEM_LARGE_PAGES
 	}
-	return slice.bytes_from_ptr(win.VirtualAlloc(nil, size, flags, win.PAGE_READWRITE), int(size))
+	allocated := win.VirtualAlloc(nil, size, flags, win.PAGE_READWRITE)
+	assert(allocated != nil)
+	return slice.bytes_from_ptr(allocated, int(size))
 }
 
 global_perf_freq: win.LARGE_INTEGER = 0
 
 STATE_FILE_NAME_COUNT :: win.MAX_PATH
+
+Input_Replay_Buffer :: struct {
+	file_handle:  win.HANDLE,
+	map_handle:   win.HANDLE,
+	filename:     [STATE_FILE_NAME_COUNT]u16,
+	memory_block: []byte,
+}
+
 Platform_State :: struct {
 	recording_handle:     win.HANDLE,
 	playback_handle:      win.HANDLE,
 	input_recoding_index: i32,
 	input_playing_index:  i32,
 	game_memory_block:    []byte,
+	replay_buffers:       [4]Input_Replay_Buffer,
 	EXE_file_name:        [STATE_FILE_NAME_COUNT]u16,
 	one_past_last_slash:  string16,
 }
 
 get_input_file_location :: proc(platform_state: ^Platform_State, index: i32, dest: []u16) -> int {
-	assert(index == 1)
-	return build_exe_path_filename(platform_state, string16("loop_edit.hmi"), dest)
+	assert(index < len(platform_state.replay_buffers))
+	temp: [64]byte
+	fmt.bprintf(temp[:], "loop_edit_%d.hmi", index)
+	temp2: [64]u16
+
+	_ = win.utf8_to_utf16_buf(temp2[:], string(temp[:]))
+
+	return build_exe_path_filename(platform_state, string16(temp2[:]), dest)
+}
+
+get_replay_buffer :: proc(platform_state: ^Platform_State, index: i32) -> ^Input_Replay_Buffer {
+	assert(index < len(platform_state.replay_buffers))
+	return &platform_state.replay_buffers[index]
 }
 
 begin_recording_input :: proc(platform_state: ^Platform_State, index: i32) {
+	assert(index < len(platform_state.replay_buffers))
 	platform_state.input_recoding_index = index
-
-
-	path: [STATE_FILE_NAME_COUNT]u16
-	_ = get_input_file_location(platform_state, index, path[:])
-	platform_state.recording_handle = win.CreateFileW(
-		cstring16(&path[0]),
-		win.GENERIC_WRITE,
-		0,
-		nil,
-		win.CREATE_ALWAYS,
-		0,
-		nil,
-	)
-	assert(platform_state.recording_handle != win.INVALID_HANDLE_VALUE)
-
+	replay_buffer := get_replay_buffer(platform_state, index)
+	platform_state.recording_handle = replay_buffer.file_handle
 	total_size := len(platform_state.game_memory_block)
 
 	assert(total_size < 1 << 32)
 
-	bytes_written: win.DWORD
-	win.WriteFile(
+	win.SetFilePointerEx(
 		platform_state.recording_handle,
-		&platform_state.game_memory_block[0],
-		u32(total_size),
-		&bytes_written,
+		win.LARGE_INTEGER(total_size),
 		nil,
+		win.FILE_BEGIN,
 	)
 
-	if bytes_written != u32(total_size) {
-		DEBUG_printfln("Failed to write to file %s", DEBUG_get_win_error())
-	}
+	mem.copy(&replay_buffer.memory_block[0], &platform_state.game_memory_block[0], total_size)
 }
 
 end_recording_input :: proc(platform_state: ^Platform_State) {
-	win.CloseHandle(platform_state.recording_handle)
+	// win.CloseHandle(platform_state.recording_handle)
 	platform_state.recording_handle = win.INVALID_HANDLE
 	platform_state.input_recoding_index = 0
 }
 
-begin_playback_input :: proc(platform_state: ^Platform_State, index: i32) {
+begin_input_playback :: proc(platform_state: ^Platform_State, index: i32) {
+	replay_buffer := get_replay_buffer(platform_state, index)
 	platform_state.input_playing_index = index
+	platform_state.playback_handle = replay_buffer.file_handle
+	total_size := len(platform_state.game_memory_block)
 
-	path: [STATE_FILE_NAME_COUNT]u16
-	_ = get_input_file_location(platform_state, index, path[:])
-	platform_state.playback_handle = win.CreateFileW(
-		cstring16(&path[0]),
-		win.GENERIC_READ,
-		win.FILE_SHARE_READ,
-		nil,
-		win.OPEN_EXISTING,
-		0,
-		nil,
-	)
-
-	total_size := u32(len(platform_state.game_memory_block))
-	bytes_read: win.DWORD
-	win.ReadFile(
+	win.SetFilePointerEx(
 		platform_state.playback_handle,
-		&platform_state.game_memory_block[0],
-		total_size,
-		&bytes_read,
+		win.LARGE_INTEGER(total_size),
 		nil,
+		win.FILE_BEGIN,
 	)
+
+	mem.copy(&platform_state.game_memory_block[0], &replay_buffer.memory_block[0], total_size)
 }
 
 end_playback_input :: proc(platform_state: ^Platform_State) {
-	win.CloseHandle(platform_state.playback_handle)
+	// win.CloseHandle(platform_state.playback_handle)
+
+	win.SetFilePointerEx(platform_state.playback_handle, 0, nil, win.FILE_BEGIN)
 	platform_state.playback_handle = win.INVALID_HANDLE
 	platform_state.input_playing_index = 0
 }
@@ -583,10 +581,19 @@ playback_input :: proc(platform_state: ^Platform_State, input: ^game.Input) {
 	if bytes_read != size_of(game.Input) {
 		playing_index := platform_state.input_playing_index
 		end_playback_input(platform_state)
-		begin_playback_input(platform_state, playing_index)
+		begin_input_playback(platform_state, playing_index)
 		win.ReadFile(platform_state.playback_handle, input, size_of(game.Input), &bytes_read, nil)
 	}
 }
+
+
+process_keyboard :: proc(new_state: ^game.Input_Button, is_down: bool) {
+	if new_state.ended_down != is_down {
+		new_state.ended_down = is_down
+		new_state.half_transition_count += 1
+	}
+}
+
 
 main :: proc() {
 	instance, lpCmdLine, startup_info := kinda_winmain()
@@ -595,11 +602,6 @@ main :: proc() {
 
 	assert(win.timeBeginPeriod(1) == win.TIMERR_NOERROR) // 1ms timer resolution
 	win.QueryPerformanceFrequency(&global_perf_freq)
-
-	monitor_refresh_rate :: 60
-	game_update_hz :: monitor_refresh_rate / 2
-	target_ms_per_frame: f32 : 1000 / f32(game_update_hz)
-
 
 	global_running = true
 	msg: win.MSG
@@ -613,6 +615,19 @@ main :: proc() {
 	game_lib: Game_Code = {}
 	load_game_code(&platform_state, &game_lib)
 	window := create_window(instance)
+
+	monitor_refresh_rate: i32 = 60
+	dc := win.GetDC(window)
+	VREFRESH :: 116
+	rate := win.GetDeviceCaps(dc, VREFRESH)
+	win.ReleaseDC(window, dc)
+	if rate > 1 {
+		monitor_refresh_rate = rate
+	}
+	game_update_hz := u32(monitor_refresh_rate)
+	game_update_hz = 30 // TODO: fix audio to work with higher fps
+	target_ms_per_frame: f32 = 1000 / f32(game_update_hz)
+
 	load_xinput()
 	audio_buffer_size: u32 = SAMPLE_RATE * BYTES_PER_SAMPLE
 	dsound_init(window, SAMPLE_RATE, audio_buffer_size)
@@ -632,17 +647,50 @@ main :: proc() {
 	global_audio_buffer.Play(global_audio_buffer, 0, 0, DSBPLAY_LOOPING)
 
 	permament_size := Megabytes(64)
-	transient_size := Megabytes(64)
+	transient_size := Gigabytes(1)
+	total_size := permament_size + transient_size
 
-	platform_state.game_memory_block = win_alloc(
-		permament_size + transient_size,
-		large_pages = false,
-	)
+	platform_state.game_memory_block = win_alloc(total_size, large_pages = false)
 
 	game_memory := game.Memory{}
 	game_memory.permament = platform_state.game_memory_block[:permament_size]
 	game_memory.transient = platform_state.game_memory_block[permament_size:permament_size +
 	transient_size]
+
+	for &replay_buffer, i in platform_state.replay_buffers {
+		_ = get_input_file_location(&platform_state, i32(i), replay_buffer.filename[:])
+		DEBUG_printfln("filename: %s", cstring16(&replay_buffer.filename[0]))
+
+		replay_buffer.file_handle = win.CreateFileW(
+			cstring16(&replay_buffer.filename[0]),
+			win.GENERIC_READ | win.GENERIC_WRITE,
+			0,
+			nil,
+			win.CREATE_ALWAYS,
+			0,
+			nil,
+		)
+
+		max_size_high := u32(total_size >> 32)
+		max_size_low := u32(total_size & 0xffffffff)
+		replay_buffer.map_handle = win.CreateFileMappingW(
+			replay_buffer.file_handle,
+			nil,
+			win.PAGE_READWRITE,
+			max_size_high,
+			max_size_low,
+			nil,
+		)
+
+		memory := win.MapViewOfFile(
+			replay_buffer.map_handle,
+			win.FILE_MAP_ALL_ACCESS,
+			0,
+			0,
+			uint(total_size),
+		)
+		replay_buffer.memory_block = slice.bytes_from_ptr(memory, int(total_size))
+	}
 
 
 	old_input := game.Input{}
@@ -650,6 +698,8 @@ main :: proc() {
 	end_counter: win.LARGE_INTEGER
 	last_counter := get_wall_clock()
 	flip_wall_clock := get_wall_clock()
+
+	thread: game.Thread_Context
 	for res > 0 && global_running {
 		load_game_code(&platform_state, &game_lib)
 		// =============================
@@ -686,12 +736,6 @@ main :: proc() {
 					return (mask & (1 << bit)) != 0
 				}
 
-				process_keyboard :: proc(new_state: ^game.Input_Button, is_down: bool) {
-					// assert(new_state.ended_down != is_down)
-					new_state.ended_down = is_down
-					new_state.half_transition_count += 1
-				}
-
 				IS_UP_BIT :: 31
 				WAS_DOWN_BIT :: 30
 				ALT_DOWN_BIT :: 29
@@ -724,7 +768,7 @@ main :: proc() {
 							begin_recording_input(&platform_state, 1)
 						} else if platform_state.input_recoding_index != 0 {
 							end_recording_input(&platform_state)
-							begin_playback_input(&platform_state, 1)
+							begin_input_playback(&platform_state, 1)
 						} else if platform_state.input_playing_index != 0 {
 							end_playback_input(&platform_state)
 							new_input = game.Input{}
@@ -737,6 +781,28 @@ main :: proc() {
 			}
 
 		}
+
+		mouse_location: win.POINT
+		win.GetCursorPos(&mouse_location)
+		win.ScreenToClient(window, &mouse_location)
+		new_input.mouse.x = mouse_location.x
+		new_input.mouse.y = mouse_location.y
+
+		// for &button in new_input.mouse_buttons.buttons {
+		// 	button.ended_down = false
+		// 	button.half_transition_count = 0
+		// }
+
+		mouse_keystate :: proc(code: i32) -> bool {
+			val := win.GetKeyState(code)
+			return transmute(u16)val & u16(1 << 15) != 0
+		}
+
+		process_keyboard(&new_input.mouse_buttons.left, mouse_keystate(win.VK_LBUTTON))
+		process_keyboard(&new_input.mouse_buttons.right, mouse_keystate(win.VK_RBUTTON))
+		process_keyboard(&new_input.mouse_buttons.middle, mouse_keystate(win.VK_MBUTTON))
+		process_keyboard(&new_input.mouse_buttons.back, mouse_keystate(win.VK_XBUTTON1))
+		process_keyboard(&new_input.mouse_buttons.forward, mouse_keystate(win.VK_XBUTTON2))
 
 		max_controllers: u32 = min(game.MAX_CONTROLELRS, win.XUSER_MAX_COUNT)
 		for controller_index: win.DWORD;
@@ -850,7 +916,7 @@ main :: proc() {
 			playback_input(&platform_state, &new_input)
 		}
 		if game_lib.update_step != nil {
-			game_lib.update_step(&game_memory, &new_input, &game_video_buffer)
+			game_lib.update_step(&thread, &game_memory, &new_input, &game_video_buffer)
 		}
 
 
@@ -923,7 +989,7 @@ main :: proc() {
 			}
 
 			if game_lib.update_audio != nil {
-				game_lib.update_audio(&game_memory, &game_sound_buffer)
+				game_lib.update_audio(&thread, &game_memory, &game_sound_buffer)
 			}
 			fill_sound_buffer(&sound_output, byte_to_lock, bytes_to_write, &game_sound_buffer)
 
@@ -1038,7 +1104,7 @@ main :: proc() {
 		}
 
 		{
-			dc := win.GetDC(window)
+			dc = win.GetDC(window)
 			defer win.ReleaseDC(window, dc)
 
 			dims := dimensions(window)
@@ -1094,6 +1160,7 @@ DEBUG_get_win_error :: proc() -> string16 {
 	return string16(buf[:len])
 }
 
+// TODO: make a struct with function pointers passed to a game for these
 DEBUG_print :: proc(str: string) {
 	out := win.utf8_to_wstring_alloc(str, context.temp_allocator)
 	win.OutputDebugStringW(out)
@@ -1112,4 +1179,74 @@ DEBUG_printf :: proc(format: string, args: ..any) {
 DEBUG_printfln :: proc(format: string, args: ..any) {
 	str := fmt.tprintfln(format, ..args)
 	DEBUG_print(str)
+}
+
+DEBUG_read_entire_file :: proc(
+	thread: game.Thread_Context,
+	filename: string,
+) -> (
+	data: []u8,
+	ok: bool,
+) #optional_ok {
+	assert(ODIN_DEBUG)
+
+	ok = false
+	wide := win.utf8_to_wstring(filename)
+	file_handle := win.CreateFileW(
+		wide,
+		win.GENERIC_READ,
+		win.FILE_SHARE_READ,
+		nil,
+		win.OPEN_EXISTING,
+		win.FILE_ATTRIBUTE_NORMAL,
+		nil,
+	)
+	defer win.CloseHandle(file_handle)
+
+	assert(file_handle != win.INVALID_HANDLE_VALUE)
+
+	file_size: win.LARGE_INTEGER
+	assert(file_size <= 1 << 32 - 1)
+	assert(win.GetFileSizeEx(file_handle, &file_size) == true)
+
+	result := win.VirtualAlloc(nil, win.SIZE_T(file_size), win.MEM_COMMIT, win.PAGE_READWRITE)
+	assert(result != nil)
+	defer if !ok {
+		win.VirtualFree(result, 0, win.MEM_RELEASE)
+	}
+
+	bytes_read: win.DWORD
+	assert(
+		win.ReadFile(file_handle, result, win.DWORD(file_size), &bytes_read, nil) == true,
+		fmt.tprintf("Failed to read file %s", filename),
+	)
+	assert(bytes_read == u32(file_size))
+
+	return slice.bytes_from_ptr(result, int(file_size)), true
+}
+
+DEBUG_free_file_memory :: proc(thread: ^game.Thread_Context, memory: []u8) {
+	assert(ODIN_DEBUG)
+	win.VirtualFree(&memory[0], 0, win.MEM_RELEASE)
+}
+
+DEBUG_write_entire_file :: proc(thread: ^game.Thread_Context, filename: string, data: []u8) {
+	assert(ODIN_DEBUG)
+
+	handle := win.CreateFileW(
+		win.utf8_to_wstring(filename),
+		win.GENERIC_WRITE,
+		0,
+		nil,
+		win.CREATE_ALWAYS,
+		0,
+		nil,
+	)
+	defer win.CloseHandle(handle)
+	assert(handle != win.INVALID_HANDLE_VALUE)
+
+	bytes_written: win.DWORD
+	win.WriteFile(handle, &data[0], win.DWORD(len(data)), &bytes_written, nil)
+
+	assert(bytes_written == u32(len(data)))
 }

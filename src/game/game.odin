@@ -2,6 +2,8 @@ package game
 
 import "core:math"
 
+Thread_Context :: struct {}
+
 // ==================================
 // =========== MAIN LOOP ============
 // ==================================
@@ -21,7 +23,12 @@ Memory :: struct {
 }
 
 @(export)
-update_step :: proc(memory: ^Memory, input: ^Input, video_buffer: ^Offscreen_Buffer) {
+update_step :: proc(
+	thread: ^Thread_Context,
+	memory: ^Memory,
+	input: ^Input,
+	video_buffer: ^Offscreen_Buffer,
+) {
 	assert(size_of(Game_State) <= len(memory.permament))
 
 	// TODO: figure this one out, why to_type gives a nil pointer
@@ -82,11 +89,20 @@ update_step :: proc(memory: ^Memory, input: ^Input, video_buffer: ^Offscreen_Buf
 	}
 
 	render_gradient(video_buffer, game_state.offset)
-	render_player(video_buffer, game_state.player_position)
+	// render_player(video_buffer, game_state.player_position)
+
+
+	color := Pixel {
+		b = u8(255),
+		g = u8(255),
+		r = u8(255),
+		a = u8(255),
+	}
+	render_player(video_buffer, game_state.player_position, color)
 }
 
 @(export)
-update_audio :: proc(memory: ^Memory, sound: ^Sound_Output_Buffer) {
+update_audio :: proc(thread: ^Thread_Context, memory: ^Memory, sound: ^Sound_Output_Buffer) {
 	state := cast(^Game_State)&memory.permament[0]
 	output_sound(state, sound, state.tone_hz)
 }
@@ -121,7 +137,7 @@ render_gradient :: proc(buf: ^Offscreen_Buffer, offset: [2]i32) {
 	}
 }
 
-render_player :: proc(buf: ^Offscreen_Buffer, player_position: [2]i32) {
+render_player :: proc(buf: ^Offscreen_Buffer, player_position: [2]i32, color: Pixel) {
 	width: i32 = 16
 	height: i32 = 16
 	left := clamp(player_position.x - width / 2, 0, buf.width - width)
@@ -131,11 +147,7 @@ render_player :: proc(buf: ^Offscreen_Buffer, player_position: [2]i32) {
 
 	for y in top ..< bottom {
 		for x in left ..< right {
-			buf.pixels[y * buf.pitch_pixels + x] = Pixel {
-				r = u8(255),
-				g = u8(255),
-				b = u8(255),
-			}
+			buf.pixels[y * buf.pitch_pixels + x] = color
 		}
 	}
 }
@@ -201,6 +213,19 @@ Button_Storage :: struct #raw_union {
 	using _: Button_Fields,
 }
 
+Mouse_Button_Fields :: struct {
+	left:    Input_Button,
+	right:   Input_Button,
+	middle:  Input_Button,
+	back:    Input_Button,
+	forward: Input_Button,
+}
+
+Mouse_Button_Storage :: struct #raw_union {
+	buttons: [size_of(Mouse_Button_Fields)]Input_Button,
+	using _: Mouse_Button_Fields,
+}
+
 Player_Input :: struct {
 	stick_x:      f32,
 	stick_y:      f32,
@@ -212,5 +237,7 @@ Player_Input :: struct {
 MAX_CONTROLELRS :: 5
 
 Input :: struct {
-	controllers: [MAX_CONTROLELRS]Player_Input,
+	controllers:   [MAX_CONTROLELRS]Player_Input,
+	mouse_buttons: Mouse_Button_Storage,
+	mouse:         [3]i32,
 }

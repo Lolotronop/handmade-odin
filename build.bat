@@ -2,6 +2,9 @@
 REM to remove the console window add this flag:
 REM -subsystem:windows
 
+REM I have portable MSVC installed in D:\soft\msvc on my laptop soooo
+if exist "d:\soft\msvc\setup_x64.bat" call "d:\soft\msvc\setup_x64.bat"
+
 if "%1"=="full" (
 odin build src^
     -debug^

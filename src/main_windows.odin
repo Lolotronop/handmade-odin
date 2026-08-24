@@ -1,6 +1,5 @@
 package handmade_odin
 
-import "base:intrinsics"
 import "base:runtime"
 import "core:fmt"
 import "core:math"
@@ -631,7 +630,7 @@ main :: proc() {
 	load_xinput()
 	audio_buffer_size: u32 = SAMPLE_RATE * BYTES_PER_SAMPLE
 	dsound_init(window, SAMPLE_RATE, audio_buffer_size)
-	offscreen_buffer_resize(&global_back_buffer, {1280, 720})
+	offscreen_buffer_resize(&global_back_buffer, {960, 540})
 
 	sound_output: Sound_Output = {
 		sample_rate          = SAMPLE_RATE,
@@ -705,7 +704,9 @@ main :: proc() {
 		// =============================
 		// ========= READ INPUT ========
 		// =============================
-		new_input := game.Input{}
+		new_input := game.Input {
+			ms_to_advance_over_update = target_ms_per_frame,
+		}
 
 		old_keyboard_controller := &old_input.controllers[0]
 		new_keyboard_controller := &new_input.controllers[0]
@@ -1023,7 +1024,7 @@ main :: proc() {
 		// ========= DISPLAY THE FRAME ============
 		// ========================================
 
-		when ODIN_DEBUG {
+		when false && ODIN_DEBUG {
 			{
 				pad_x: i32 = 16
 				pad_y: i32 = 16

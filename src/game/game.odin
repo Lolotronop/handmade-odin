@@ -7,13 +7,7 @@ Thread_Context :: struct {}
 // ==================================
 // =========== MAIN LOOP ============
 // ==================================
-Game_State :: struct {
-	tone_hz:         f32,
-	sine_t:          f32,
-	offset:          [2]i32,
-	player_position: [2]i32,
-	t_jump:          f32,
-}
+Game_State :: struct {}
 
 Memory :: struct {
 	// required to be cleared to 0
@@ -34,16 +28,10 @@ update_step :: proc(
 	// TODO: figure this one out, why to_type gives a nil pointer
 	// state := slice.to_type(memory.permament, ^State)
 	game_state := cast(^Game_State)&memory.permament[0]
+	_ = game_state
 
 	if memory.is_initialized == false {
 		memory.is_initialized = true
-
-		game_state.tone_hz = 440.0
-		game_state.offset.x = 0
-		game_state.offset.y = 0
-
-		game_state.player_position.x = 100
-		game_state.player_position.y = 100
 	}
 
 	for controller in input.controllers {
@@ -52,14 +40,6 @@ update_step :: proc(
 		}
 
 		if controller.is_analog {
-			if controller.stick_y != 0 {
-				game_state.tone_hz = 440.0 + controller.stick_y * 128.0
-			}
-			// state.offset.x += cast(i32)(4.0 * controller.stick_x)
-			// state.offset.y += cast(i32)(4.0 * controller.stick_y)
-
-			game_state.player_position.x += cast(i32)(4.0 * controller.stick_x)
-			game_state.player_position.y += cast(i32)(4.0 * controller.stick_y)
 		} else {
 			move: [2]i32 = {0, 0}
 
@@ -68,43 +48,33 @@ update_step :: proc(
 			move.y += controller.move_down.ended_down ? 1 : 0
 			move.y -= controller.move_up.ended_down ? 1 : 0
 
-			// state.offset.x += move.x * 4
-			// state.offset.y += move.y * 4
-
-			game_state.player_position.x += move.x * 4
-			game_state.player_position.y += move.y * 4
-			game_state.player_position.y += i32(math.sin(2 * math.PI * game_state.t_jump) * 10)
-			if (move.x != 0 || move.y != 0) {
-				game_state.tone_hz = 440.0 + f32(move.y * 128)
-			}
-		}
-
-
-		game_state.t_jump -= 0.033
-		game_state.t_jump = clamp(game_state.t_jump, 0.0, 1.0)
-		if (controller.a.ended_down) {
-			game_state.offset.y += 1
-			game_state.t_jump = 1.0
+			_ = move
 		}
 	}
 
-	render_gradient(video_buffer, game_state.offset)
-	// render_player(video_buffer, game_state.player_position)
+	// clear the screen
+	render_rectangle(
+		video_buffer,
+		Rectangle {
+			minX = 0,
+			minY = 0,
+			maxX = f32(video_buffer.width),
+			maxY = f32(video_buffer.height),
+		},
+		Pixel{a = 255},
+	)
 
-
-	color := Pixel {
-		b = u8(255),
-		g = u8(255),
-		r = u8(255),
-		a = u8(255),
-	}
-	render_player(video_buffer, game_state.player_position, color)
+	render_rectangle(
+		video_buffer,
+		Rectangle{minX = 10, minY = 10, maxX = 100, maxY = 100},
+		Pixel{r = 255, g = 128, b = 128, a = 128},
+	)
 }
 
 @(export)
 update_audio :: proc(thread: ^Thread_Context, memory: ^Memory, sound: ^Sound_Output_Buffer) {
 	state := cast(^Game_State)&memory.permament[0]
-	output_sound(state, sound, state.tone_hz)
+	output_sound(state, sound)
 }
 
 
@@ -125,26 +95,37 @@ Offscreen_Buffer :: struct {
 	pitch_pixels: i32,
 }
 
-render_gradient :: proc(buf: ^Offscreen_Buffer, offset: [2]i32) {
+render_strange_gradient :: proc(buf: ^Offscreen_Buffer, offset: [2]i32) {
 	for y in 0 ..< buf.height {
 		for x in 0 ..< buf.width {
 			buf.pixels[y * buf.pitch_pixels + x] = Pixel {
 				r = u8(x + offset.x),
 				g = u8(y + offset.y),
 				b = u8(0),
+				a = 255,
 			}
 		}
 	}
 }
 
-render_player :: proc(buf: ^Offscreen_Buffer, player_position: [2]i32, color: Pixel) {
-	width: i32 = 16
-	height: i32 = 16
-	left := clamp(player_position.x - width / 2, 0, buf.width - width)
-	top := clamp(player_position.y - height / 2, 0, buf.height - height)
-	right := clamp(player_position.x + width / 2, 0, buf.width - width)
-	bottom := clamp(player_position.y + height / 2, 0, buf.height - height)
+Rectangle :: struct {
+	minX: f32,
+	minY: f32,
+	maxX: f32,
+	maxY: f32,
+}
 
+render_rectangle :: proc(buf: ^Offscreen_Buffer, rect: Rectangle, color: Pixel) {
+	to_int_pixel :: proc(x: f32) -> i32 {return cast(i32)math.round(x)}
+
+	left := clamp(to_int_pixel(rect.minX), 0, buf.width)
+	right := clamp(to_int_pixel(rect.maxX), 0, buf.width)
+
+	top := clamp(to_int_pixel(rect.minY), 0, buf.height)
+	bottom := clamp(to_int_pixel(rect.maxY), 0, buf.height)
+
+	// TODO(perf): will this benefit in perf from raw pointer math or the compiler is good enough
+	// to not make me do that and I can rely on the usual array semantics here?
 	for y in top ..< bottom {
 		for x in left ..< right {
 			buf.pixels[y * buf.pitch_pixels + x] = color
@@ -167,15 +148,21 @@ Sound_Output_Buffer :: struct {
 	sample_rate: u32,
 }
 
-output_sound :: proc(state: ^Game_State, buf: ^Sound_Output_Buffer, tone_hz: f32 = 440.0) {
-	volume: f32 = 0.1
-	wave_period: f32 = f32(buf.sample_rate) / tone_hz
+DEBUG_GENERATE_FREQ :: false
+output_sound :: proc(state: ^Game_State, buf: ^Sound_Output_Buffer) {
+	when DEBUG_GENERATE_FREQ {
+		volume: f32 = 0.1
+		wave_period: f32 = f32(buf.sample_rate) / tone_hz
+	}
 
 	for &sample in buf.samples {
-		sine_value: f32 = math.sin(state.sine_t)
-		state.sine_t = math.mod(state.sine_t + math.TAU / wave_period, math.TAU)
+		sample_value: i16 = 0
 
-		sample_value := cast(i16)(sine_value * volume * cast(f32)(2 << 14))
+		when DEBUG_GENERATE_FREQ {
+			sine_value: f32 = math.sin(state.sine_t)
+			state.sine_t = math.mod(state.sine_t + math.TAU / wave_period, math.TAU)
+			sample_value := cast(i16)(sine_value * volume * cast(f32)(2 << 14))
+		}
 
 		sample.left = sample_value
 		sample.right = sample_value
@@ -237,7 +224,8 @@ Player_Input :: struct {
 MAX_CONTROLELRS :: 5
 
 Input :: struct {
-	controllers:   [MAX_CONTROLELRS]Player_Input,
-	mouse_buttons: Mouse_Button_Storage,
-	mouse:         [3]i32,
+	controllers:               [MAX_CONTROLELRS]Player_Input,
+	mouse_buttons:             Mouse_Button_Storage,
+	mouse:                     [3]i32,
+	ms_to_advance_over_update: f32,
 }

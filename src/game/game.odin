@@ -7,7 +7,9 @@ Thread_Context :: struct {}
 // ==================================
 // =========== MAIN LOOP ============
 // ==================================
-Game_State :: struct {}
+Game_State :: struct {
+	player_position: [2]f32,
+}
 
 Memory :: struct {
 	// required to be cleared to 0
@@ -17,7 +19,7 @@ Memory :: struct {
 }
 
 @(export)
-update_step :: proc(
+update_and_render :: proc(
 	thread: ^Thread_Context,
 	memory: ^Memory,
 	input: ^Input,
@@ -41,34 +43,85 @@ update_step :: proc(
 
 		if controller.is_analog {
 		} else {
-			move: [2]i32 = {0, 0}
+			move: [2]f32 = {0, 0}
 
 			move.x += controller.move_right.ended_down ? 1 : 0
 			move.x -= controller.move_left.ended_down ? 1 : 0
 			move.y += controller.move_down.ended_down ? 1 : 0
 			move.y -= controller.move_up.ended_down ? 1 : 0
 
-			_ = move
+			speed: f32 = 100
+
+			game_state.player_position.x += move.x * speed * input.dt
+			game_state.player_position.y += move.y * speed * input.dt
 		}
 	}
 
-	// clear the screen
-	render_rectangle(
-		video_buffer,
-		Rectangle {
-			minX = 0,
-			minY = 0,
-			maxX = f32(video_buffer.width),
-			maxY = f32(video_buffer.height),
-		},
-		Pixel{a = 255},
-	)
+	TILE_MAP_WIDTH :: 17
+	TILE_MAP_HEIGHT :: 9
+	tile_map: [TILE_MAP_HEIGHT][TILE_MAP_WIDTH]u32 = {
+		{1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1},
+		{1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+		{1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+		{1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1},
+		{1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1},
+		{1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1},
+		{1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1},
+		{1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1},
+		{1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1},
+	}
 
-	render_rectangle(
-		video_buffer,
-		Rectangle{minX = 10, minY = 10, maxX = 100, maxY = 100},
-		Pixel{r = 255, g = 128, b = 128, a = 128},
-	)
+	// debug purple background to see if I missed any part of the screen during
+	// actual rendering
+	when ODIN_DEBUG {
+		render_rectangle(
+			video_buffer,
+			Rectangle {
+				minX = 0,
+				minY = 0,
+				maxX = f32(video_buffer.width),
+				maxY = f32(video_buffer.height),
+			},
+			Color{r = 1, g = 0, b = 1},
+		)
+	}
+
+
+	tile_height := f32(video_buffer.height) / f32(TILE_MAP_HEIGHT)
+	tile_width: f32 = tile_height
+
+	x_offset: f32 = -tile_width / 2
+	y_offset: f32 = 0
+
+	for &row, y_int in tile_map {
+		for value, x_int in row {
+			x := f32(x_int)
+			y := f32(y_int)
+			minX := x_offset + x * tile_width
+			minY := y_offset + y * tile_width
+			rect := Rectangle {
+				minX = minX,
+				minY = minY,
+				maxX = minX + tile_width,
+				maxY = minY + tile_height,
+			}
+			if value == 1 {
+				render_rectangle(video_buffer, rect, Color{r = 1, g = 0, b = 0})
+			} else {
+				render_rectangle(video_buffer, rect, Color{r = 0.1, g = 0.8, b = 0.1})
+			}
+		}
+	}
+
+	player_width: f32 = tile_width / 2
+	player_height := player_width * 1.3
+
+	minX := game_state.player_position.x - player_height
+	minY := game_state.player_position.y - player_width / 2
+	maxX := minX + player_width
+	maxY := minY + player_height
+	player_rect := Rectangle{minX, minY, maxX, maxY}
+	render_rectangle(video_buffer, player_rect, Color{b = 1})
 }
 
 @(export)
@@ -86,6 +139,23 @@ Pixel :: struct {
 	g: u8,
 	r: u8,
 	a: u8,
+}
+
+Color :: struct {
+	r: f32,
+	g: f32,
+	b: f32,
+}
+
+color_to_pixel :: proc(color: Color) -> Pixel {
+	map_range :: proc(value: f32) -> u8 {
+		// when ODIN_DEBUG {
+		// 	assert(value >= 0, "Range of 0-1")
+		// 	assert(value <= 1, "Range of 0-1")
+		// }
+		return u8(math.round(clamp(value, 0, 1) * 255))
+	}
+	return Pixel{r = map_range(color.r), g = map_range(color.g), b = map_range(color.b), a = 255}
 }
 
 Offscreen_Buffer :: struct {
@@ -115,7 +185,7 @@ Rectangle :: struct {
 	maxY: f32,
 }
 
-render_rectangle :: proc(buf: ^Offscreen_Buffer, rect: Rectangle, color: Pixel) {
+render_rectangle :: proc(buf: ^Offscreen_Buffer, rect: Rectangle, color: Color) {
 	to_int_pixel :: proc(x: f32) -> i32 {return cast(i32)math.round(x)}
 
 	left := clamp(to_int_pixel(rect.minX), 0, buf.width)
@@ -126,9 +196,10 @@ render_rectangle :: proc(buf: ^Offscreen_Buffer, rect: Rectangle, color: Pixel) 
 
 	// TODO(perf): will this benefit in perf from raw pointer math or the compiler is good enough
 	// to not make me do that and I can rely on the usual array semantics here?
+	pixel := color_to_pixel(color)
 	for y in top ..< bottom {
 		for x in left ..< right {
-			buf.pixels[y * buf.pitch_pixels + x] = color
+			buf.pixels[y * buf.pitch_pixels + x] = pixel
 		}
 	}
 }
@@ -224,8 +295,8 @@ Player_Input :: struct {
 MAX_CONTROLELRS :: 5
 
 Input :: struct {
-	controllers:               [MAX_CONTROLELRS]Player_Input,
-	mouse_buttons:             Mouse_Button_Storage,
-	mouse:                     [3]i32,
-	ms_to_advance_over_update: f32,
+	controllers:   [MAX_CONTROLELRS]Player_Input,
+	mouse_buttons: Mouse_Button_Storage,
+	mouse:         [3]i32,
+	dt:            f32,
 }

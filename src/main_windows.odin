@@ -32,7 +32,7 @@ load_win_proc :: proc(module: win.HMODULE, name: cstring, destination: rawptr) -
 }
 
 Game_Code :: struct {
-	update_step:         type_of(game.update_step),
+	update_and_render:   type_of(game.update_and_render),
 	update_audio:        type_of(game.update_audio),
 	module:              win.HMODULE,
 	is_valid:            bool,
@@ -92,7 +92,7 @@ load_game_code :: proc(platform_state: ^Platform_State, lib: ^Game_Code) -> (ok:
 
 	if lib.module != nil {
 		lib.update_audio = nil
-		lib.update_step = nil
+		lib.update_and_render = nil
 		lib.is_valid = false
 
 		// TODO: this does not unload the dll instantly
@@ -125,7 +125,7 @@ load_game_code :: proc(platform_state: ^Platform_State, lib: ^Game_Code) -> (ok:
 		win.FreeLibrary(lib.module)
 	}
 
-	load_win_proc(lib.module, "update_step", &lib.update_step) or_return
+	load_win_proc(lib.module, "update_and_render", &lib.update_and_render) or_return
 	load_win_proc(lib.module, "update_audio", &lib.update_audio) or_return
 
 	lib.is_valid = true
@@ -625,7 +625,7 @@ main :: proc() {
 	}
 	game_update_hz := u32(monitor_refresh_rate)
 	game_update_hz = 30 // TODO: fix audio to work with higher fps
-	target_ms_per_frame: f32 = 1000 / f32(game_update_hz)
+	target_s_per_frame: f32 = 1 / f32(game_update_hz)
 
 	load_xinput()
 	audio_buffer_size: u32 = SAMPLE_RATE * BYTES_PER_SAMPLE
@@ -705,7 +705,7 @@ main :: proc() {
 		// ========= READ INPUT ========
 		// =============================
 		new_input := game.Input {
-			ms_to_advance_over_update = target_ms_per_frame,
+			dt = target_s_per_frame,
 		}
 
 		old_keyboard_controller := &old_input.controllers[0]
@@ -916,8 +916,8 @@ main :: proc() {
 		if platform_state.input_playing_index != 0 {
 			playback_input(&platform_state, &new_input)
 		}
-		if game_lib.update_step != nil {
-			game_lib.update_step(&thread, &game_memory, &new_input, &game_video_buffer)
+		if game_lib.update_and_render != nil {
+			game_lib.update_and_render(&thread, &game_memory, &new_input, &game_video_buffer)
 		}
 
 
@@ -926,7 +926,7 @@ main :: proc() {
 		// ========================================
 
 		audio_wall_clock := get_wall_clock()
-		from_begin_to_audio_ms := elapsed_ms(flip_wall_clock, audio_wall_clock)
+		from_begin_to_audio_s := elapsed(flip_wall_clock, audio_wall_clock)
 
 		play_cursor: win.DWORD
 		write_cursor: win.DWORD
@@ -946,9 +946,9 @@ main :: proc() {
 
 			expected_sound_bytes_per_frame :=
 				(sound_output.sample_rate * sound_output.bytes_per_sample) / game_update_hz
-			ms_left_until_flip := target_ms_per_frame - from_begin_to_audio_ms
+			ms_left_until_flip := target_s_per_frame - from_begin_to_audio_s
 			expected_bytes_until_flip := u32(
-				(ms_left_until_flip / target_ms_per_frame) * f32(expected_sound_bytes_per_frame),
+				(ms_left_until_flip / target_s_per_frame) * f32(expected_sound_bytes_per_frame),
 			)
 
 			expected_frame_boundary_byte := play_cursor + expected_bytes_until_flip
@@ -1005,16 +1005,17 @@ main :: proc() {
 		// ========= WAIT FOR NEXT FRAME ==========
 		// ========================================
 		end_counter = get_wall_clock()
-		perf_ms := elapsed_ms(last_counter, end_counter)
-		if perf_ms < target_ms_per_frame {
-			sleep_ms := u32(math.floor(target_ms_per_frame - perf_ms))
+		perf_s := elapsed(last_counter, end_counter)
+		if perf_s < target_s_per_frame {
+			sleep_for := target_s_per_frame - perf_s
+			sleep_ms := u32(math.floor(sleep_for * 1000))
 			if sleep_ms > 0 {win.Sleep(min(sleep_ms, 0))}
-			perf_ms = elapsed_ms(last_counter, get_wall_clock())
-			for perf_ms < target_ms_per_frame {
-				perf_ms = elapsed_ms(last_counter, get_wall_clock())
+			perf_s = elapsed(last_counter, get_wall_clock())
+			for perf_s < target_s_per_frame {
+				perf_s = elapsed(last_counter, get_wall_clock())
 			}
 		} else {
-			DEBUG_printfln("Warning: frame took %.2fms", perf_ms)
+			DEBUG_printfln("Warning: frame took %.2fms", perf_s * 1000)
 			sound_is_valid = false
 		}
 		end_counter = get_wall_clock()
@@ -1128,10 +1129,10 @@ minmax :: #force_inline proc(a, b: $T) -> (T, T) {
 	if a < b {return a, b} else {return b, a}
 }
 
-elapsed_ms :: #force_inline proc(start: win.LARGE_INTEGER, end: win.LARGE_INTEGER) -> f32 {
+elapsed :: #force_inline proc(start: win.LARGE_INTEGER, end: win.LARGE_INTEGER) -> f32 {
 	// TODO: do I need this?
 	a, b := minmax(start, end)
-	return f32(b - a) / f32(global_perf_freq) * 1000.0
+	return f32(b - a) / f32(global_perf_freq)
 }
 
 get_wall_clock :: #force_inline proc() -> win.LARGE_INTEGER {

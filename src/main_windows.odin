@@ -352,10 +352,43 @@ offscreen_buffer_resize :: proc(buf: ^Offscreen_Buffer, dims: [2]i32) {
 }
 
 display_buffer :: proc(device_context: win.HDC, window_dims: [2]i32, buf: ^Offscreen_Buffer) {
-	win.StretchDIBits(
+	offset_x, offset_y: i32
+
+	offset_x = window_dims.x / 2 - buf.width / 2
+	offset_y = window_dims.y / 2 - buf.height / 2
+
+	// NOTE(lolotr): because windows can display a frame between us blitting
+	// a black screen and the actual game frame, painting everything black
+	// results in flickering - sometimes the pure-black frame gets shown,
+	// sometimes the game bitmap blits before page flip. so we draw 4 separate
+	// black rects around the game so that it does not flicker
+	win.PatBlt(device_context, 0, 0, window_dims.x, offset_y, win.BLACKNESS)
+	win.PatBlt(
 		device_context,
 		0,
-		0,
+		buf.height + offset_y,
+		window_dims.x,
+		window_dims.y - buf.height - offset_y,
+		win.BLACKNESS,
+	)
+	win.PatBlt(device_context, 0, offset_y, offset_x, buf.height, win.BLACKNESS)
+	win.PatBlt(
+		device_context,
+		offset_x + buf.width,
+		offset_y,
+		window_dims.x - buf.width - offset_x,
+		buf.height,
+		win.BLACKNESS,
+	)
+
+
+	// offset_x = 10
+	// offset_y = 10
+
+	win.StretchDIBits(
+		device_context,
+		offset_x,
+		offset_y,
 		buf.width,
 		buf.height,
 		0,
@@ -705,7 +738,8 @@ main :: proc() {
 		// ========= READ INPUT ========
 		// =============================
 		new_input := game.Input {
-			dt = target_s_per_frame,
+			dt             = target_s_per_frame,
+			DEBUG_printfln = DEBUG_printfln,
 		}
 
 		old_keyboard_controller := &old_input.controllers[0]

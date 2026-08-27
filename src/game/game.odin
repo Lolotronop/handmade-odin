@@ -1,6 +1,7 @@
 package game
 
 import "core:math"
+import "core:slice"
 
 Thread_Context :: struct {}
 
@@ -9,6 +10,7 @@ Thread_Context :: struct {}
 // ==================================
 Game_State :: struct {
 	player_position: [2]f32,
+	active_tilemap:  [2]int,
 }
 
 Memory :: struct {
@@ -16,6 +18,18 @@ Memory :: struct {
 	permament:      []byte,
 	transient:      []byte,
 	is_initialized: bool,
+}
+
+Tile_Map :: struct {
+	data:       []u32,
+	count:      [2]u32,
+	tile_dims:  [2]f32,
+	upper_left: [2]f32,
+}
+
+World :: struct {
+	maps: []Tile_Map,
+	size: [2]int,
 }
 
 @(export)
@@ -32,9 +46,146 @@ update_and_render :: proc(
 	game_state := cast(^Game_State)&memory.permament[0]
 	_ = game_state
 
+	TILE_MAP_COUNT_X :: 17
+	TILE_MAP_COUNT_Y :: 9
+	tile_height := f32(video_buffer.height) / f32(TILE_MAP_COUNT_Y)
+	tile_width: f32 = tile_height
+
+	upper_left_x: f32 = -tile_width / 2
+	upper_left_y: f32 = 0
+
+	Tile_Data :: [TILE_MAP_COUNT_Y][TILE_MAP_COUNT_X]u32
+
+	tile_data_00: Tile_Data = {
+		{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
+		{1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+		{1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+		{1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1},
+		{1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0},
+		{1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1},
+		{1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1},
+		{1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1},
+		{1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1},
+	}
+
+	tile_data_01: Tile_Data = {
+		{1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1},
+		{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+		{1, 0, 0, 0, 0, 1, 0, 1, 1, 1, 0, 1, 0, 0, 0, 0, 1},
+		{1, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 1},
+		{1, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0},
+		{1, 0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 1},
+		{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+		{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+		{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
+	}
+
+	tile_data_10: Tile_Data = {
+		{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
+		{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+		{1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 1},
+		{1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1},
+		{0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1},
+		{1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 1},
+		{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+		{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+		{1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1},
+	}
+
+	tile_data_11: Tile_Data = {
+		{1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1},
+		{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+		{1, 0, 0, 0, 0, 1, 0, 1, 1, 1, 0, 1, 0, 0, 0, 0, 1},
+		{1, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 1},
+		{0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 1},
+		{1, 0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 1},
+		{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+		{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+		{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
+	}
+
+	maps: [2][2]Tile_Map = {
+		{
+			{
+				data = slice.from_ptr(&tile_data_00[0][0], TILE_MAP_COUNT_X * TILE_MAP_COUNT_Y),
+				tile_dims = {tile_height, tile_width},
+				upper_left = {upper_left_x, upper_left_y},
+				count = {TILE_MAP_COUNT_X, TILE_MAP_COUNT_Y},
+			},
+			{},
+		},
+		{{}, {}},
+	}
+
+	maps[0][1] = maps[0][0]
+	maps[0][1].data = slice.from_ptr(&tile_data_01[0][0], TILE_MAP_COUNT_X * TILE_MAP_COUNT_Y)
+
+	maps[1][0] = maps[0][0]
+	maps[1][0].data = slice.from_ptr(&tile_data_10[0][0], TILE_MAP_COUNT_X * TILE_MAP_COUNT_Y)
+
+	maps[1][1] = maps[0][0]
+	maps[1][1].data = slice.from_ptr(&tile_data_11[0][0], TILE_MAP_COUNT_X * TILE_MAP_COUNT_Y)
+
+	world := World {
+		maps = slice.from_ptr(&maps[0][0], 4),
+	}
+
+
+	tile_map := get_tilemap_unchecked(&world, {0, 0})
+
+	player_width: f32 = tile_map.tile_dims.x / 2
+	player_height := player_width * 1.3
+
+	get_tile_value_unchecked :: proc(tile_map: ^Tile_Map, pos: [2]int) -> u32 {
+		index := pos.y * int(tile_map.count.x) + pos.x
+		return tile_map.data[index]
+	}
+
+	get_tilemap_unchecked :: proc(world: ^World, pos: [2]int) -> ^Tile_Map {
+		index := pos.y * int(world.size.x) + pos.x
+		return &world.maps[index]
+	}
+
+	is_tilemap_point_empty :: proc(tile_map: ^Tile_Map, pos: [2]f32) -> bool {
+		is_point_empty := false
+
+		x := int(math.floor((pos.x - tile_map.upper_left.x) / tile_map.tile_dims.x))
+		y := int(math.floor((pos.y - tile_map.upper_left.y) / tile_map.tile_dims.y))
+
+		if x >= 0 && x < TILE_MAP_COUNT_X && y >= 0 && y < TILE_MAP_COUNT_Y {
+			tile_map_value := get_tile_value_unchecked(tile_map, {x, y})
+			if tile_map_value == 0 {
+				is_point_empty = true
+			}
+		}
+
+		return is_point_empty
+	}
+
+	is_world_point_empty :: proc(world: ^World, tilemap_pos: [2]int, pos: [2]f32) -> bool {
+		tile_map := get_tilemap_unchecked(world, tilemap_pos)
+		is_point_empty := false
+
+		x := int(math.floor((pos.x - tile_map.upper_left.x) / tile_map.tile_dims.x))
+		y := int(math.floor((pos.y - tile_map.upper_left.y) / tile_map.tile_dims.y))
+
+		if x >= 0 && x < TILE_MAP_COUNT_X && y >= 0 && y < TILE_MAP_COUNT_Y {
+			tile_map_value := get_tile_value_unchecked(tile_map, {x, y})
+			if tile_map_value == 0 {
+				is_point_empty = true
+			}
+		}
+
+		return is_point_empty
+	}
+
+
 	if memory.is_initialized == false {
+		game_state.player_position.x = 200
+		game_state.player_position.y = 150
 		memory.is_initialized = true
 	}
+
 
 	for controller in input.controllers {
 		if controller.is_connected == false {
@@ -52,24 +203,41 @@ update_and_render :: proc(
 
 			speed: f32 = 100
 
-			game_state.player_position.x += move.x * speed * input.dt
-			game_state.player_position.y += move.y * speed * input.dt
+
+			new_player_x := game_state.player_position.x + move.x * speed * input.dt
+			new_player_y := game_state.player_position.y + move.y * speed * input.dt
+
+
+			is_valid_player_position :=
+				is_tilemap_point_empty(tile_map, {new_player_x, new_player_y}) &&
+				is_tilemap_point_empty(
+					tile_map,
+					{new_player_x - player_width / 2, new_player_y},
+				) &&
+				is_tilemap_point_empty(tile_map, {new_player_x + player_width / 2, new_player_y})
+
+			if is_valid_player_position {
+				game_state.player_position.x = new_player_x
+				game_state.player_position.y = new_player_y
+			}
+
+			if new_player_y < 0 {
+				game_state.active_tilemap = 0
+				game_state.player_position.y = f32(video_buffer.height) - 1
+			} else if new_player_y > f32(video_buffer.height) {
+				game_state.active_tilemap = 1
+				game_state.player_position.y = 0
+			}
 		}
 	}
 
-	TILE_MAP_WIDTH :: 17
-	TILE_MAP_HEIGHT :: 9
-	tile_map: [TILE_MAP_HEIGHT][TILE_MAP_WIDTH]u32 = {
-		{1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1},
-		{1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
-		{1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1},
-		{1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1},
-		{1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1},
-		{1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1},
-		{1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1},
-		{1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1},
-		{1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1},
-	}
+	player_tile_x := int(
+		math.floor((game_state.player_position.x - tile_map.upper_left.x) / tile_map.tile_dims.x),
+	)
+	player_tile_y := int(
+		math.floor((game_state.player_position.y - tile_map.upper_left.y) / tile_map.tile_dims.y),
+	)
+
 
 	// debug purple background to see if I missed any part of the screen during
 	// actual rendering
@@ -87,25 +255,23 @@ update_and_render :: proc(
 	}
 
 
-	tile_height := f32(video_buffer.height) / f32(TILE_MAP_HEIGHT)
-	tile_width: f32 = tile_height
-
-	x_offset: f32 = -tile_width / 2
-	y_offset: f32 = 0
-
-	for &row, y_int in tile_map {
-		for value, x_int in row {
+	for y_int in 0 ..< int(tile_map.count.y) {
+		for x_int in 0 ..< int(tile_map.count.x) {
+			value := get_tile_value_unchecked(tile_map, {y_int, x_int})
 			x := f32(x_int)
 			y := f32(y_int)
-			minX := x_offset + x * tile_width
-			minY := y_offset + y * tile_width
+			minX := tile_map.upper_left.x + x * tile_map.tile_dims.x
+			minY := tile_map.upper_left.y + y * tile_map.tile_dims.y
+
 			rect := Rectangle {
 				minX = minX,
 				minY = minY,
-				maxX = minX + tile_width,
-				maxY = minY + tile_height,
+				maxX = minX + tile_map.tile_dims.x,
+				maxY = minY + tile_map.tile_dims.y,
 			}
-			if value == 1 {
+			if player_tile_x == x_int && player_tile_y == y_int {
+				render_rectangle(video_buffer, rect, Color{r = 1, g = 1, b = 0})
+			} else if value == 1 {
 				render_rectangle(video_buffer, rect, Color{r = 1, g = 0, b = 0})
 			} else {
 				render_rectangle(video_buffer, rect, Color{r = 0.1, g = 0.8, b = 0.1})
@@ -113,15 +279,25 @@ update_and_render :: proc(
 		}
 	}
 
-	player_width: f32 = tile_width / 2
-	player_height := player_width * 1.3
 
-	minX := game_state.player_position.x - player_height
-	minY := game_state.player_position.y - player_width / 2
+	minX := game_state.player_position.x - player_width / 2
+	minY := game_state.player_position.y - player_height
+
 	maxX := minX + player_width
 	maxY := minY + player_height
 	player_rect := Rectangle{minX, minY, maxX, maxY}
 	render_rectangle(video_buffer, player_rect, Color{b = 1})
+
+	render_rectangle(
+		video_buffer,
+		Rectangle {
+			minX = game_state.player_position.x - 2,
+			minY = game_state.player_position.y - 2,
+			maxX = game_state.player_position.x + 2,
+			maxY = game_state.player_position.y + 2,
+		},
+		Color{b = 1, g = 1, r = 1},
+	)
 }
 
 @(export)
@@ -295,8 +471,9 @@ Player_Input :: struct {
 MAX_CONTROLELRS :: 5
 
 Input :: struct {
-	controllers:   [MAX_CONTROLELRS]Player_Input,
-	mouse_buttons: Mouse_Button_Storage,
-	mouse:         [3]i32,
-	dt:            f32,
+	controllers:    [MAX_CONTROLELRS]Player_Input,
+	mouse_buttons:  Mouse_Button_Storage,
+	mouse:          [3]i32,
+	dt:             f32,
+	DEBUG_printfln: proc(format: string, args: ..any),
 }
